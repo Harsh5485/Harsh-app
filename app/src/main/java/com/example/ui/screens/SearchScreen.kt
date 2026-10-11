@@ -41,6 +41,16 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.foundation.focusable
+import androidx.compose.ui.focus.onFocusChanged
+import androidx.compose.ui.input.key.onKeyEvent
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.type
+import android.view.KeyEvent
+import com.example.ui.theme.NuvioPrimaryBright
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -85,14 +95,40 @@ fun SearchScreen(
                 .padding(horizontal = 12.dp, vertical = 8.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
+            var isBackFocused by remember { mutableStateOf(false) }
             IconButton(
                 onClick = onBackClick,
-                modifier = Modifier.testTag("search_back_button")
+                modifier = Modifier
+                    .onFocusChanged { isBackFocused = it.isFocused }
+                    .background(
+                        if (isBackFocused) NuvioPrimaryBright else Color.Transparent,
+                        CircleShape
+                    )
+                    .border(
+                        width = if (isBackFocused) 3.dp else 0.dp,
+                        color = if (isBackFocused) Color.White else Color.Transparent,
+                        shape = CircleShape
+                    )
+                    .onKeyEvent { keyEvent ->
+                        if (keyEvent.type == KeyEventType.KeyDown) {
+                            when (keyEvent.nativeKeyEvent.keyCode) {
+                                KeyEvent.KEYCODE_DPAD_CENTER,
+                                KeyEvent.KEYCODE_ENTER,
+                                KeyEvent.KEYCODE_NUMPAD_ENTER -> {
+                                    onBackClick()
+                                    true
+                                }
+                                else -> false
+                            }
+                        } else false
+                    }
+                    .focusable()
+                    .testTag("search_back_button")
             ) {
                 Icon(
                     imageVector = Icons.AutoMirrored.Filled.ArrowBack,
                     contentDescription = "Back",
-                    tint = NuvioTextPrimary
+                    tint = if (isBackFocused) Color.Black else NuvioTextPrimary
                 )
             }
 
@@ -210,17 +246,38 @@ fun SearchScreen(
                 Spacer(modifier = Modifier.height(8.dp))
                 LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     items(QUICK_SUGGESTIONS) { term ->
+                        var isTermFocused by remember { mutableStateOf(false) }
                         Surface(
                             shape = RoundedCornerShape(16.dp),
-                            color = NuvioSurfaceVariant,
+                            color = if (isTermFocused) NuvioPrimaryBright else NuvioSurfaceVariant,
                             modifier = Modifier
-                                .border(1.dp, NuvioCardBorder, RoundedCornerShape(16.dp))
+                                .onFocusChanged { isTermFocused = it.isFocused }
+                                .border(
+                                    width = if (isTermFocused) 3.dp else 1.dp,
+                                    color = if (isTermFocused) Color.White else NuvioCardBorder,
+                                    shape = RoundedCornerShape(16.dp)
+                                )
+                                .onKeyEvent { keyEvent ->
+                                    if (keyEvent.type == KeyEventType.KeyDown) {
+                                        when (keyEvent.nativeKeyEvent.keyCode) {
+                                            KeyEvent.KEYCODE_DPAD_CENTER,
+                                            KeyEvent.KEYCODE_ENTER,
+                                            KeyEvent.KEYCODE_NUMPAD_ENTER -> {
+                                                viewModel.updateSearchQuery(term)
+                                                true
+                                            }
+                                            else -> false
+                                        }
+                                    } else false
+                                }
+                                .focusable()
                                 .clickable { viewModel.updateSearchQuery(term) }
                         ) {
                             Text(
                                 text = term,
-                                color = NuvioTextPrimary,
+                                color = if (isTermFocused) Color.Black else NuvioTextPrimary,
                                 fontSize = 12.sp,
+                                fontWeight = if (isTermFocused) FontWeight.Bold else FontWeight.Normal,
                                 modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp)
                             )
                         }

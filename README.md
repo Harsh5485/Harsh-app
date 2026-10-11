@@ -1,30 +1,34 @@
-# Harsh - Premium Movies & Series Streaming
+# Harsh TV - Premium Android TV Movies & Series Streaming
 
 <p align="center">
-  <img src="art/banner.svg" alt="Harsh Banner" width="100%" />
+  <img src="art/banner.svg" alt="Harsh TV Banner" width="100%" />
 </p>
 
 <p align="center">
-  <a href="https://github.com/Harsh5485/Harsh-app/releases"><img src="https://img.shields.io/badge/Download-APK-22c55e?style=for-the-badge&logo=android&logoColor=white" alt="Download APK" /></a>
+  <a href="https://github.com/Harsh5485/Harsh-app/releases"><img src="https://img.shields.io/badge/Download-Harsh_TV_APK-22c55e?style=for-the-badge&logo=android&logoColor=white" alt="Download APK" /></a>
   &nbsp;
   <a href="https://github.com/Harsh5485/Harsh-app/archive/refs/heads/main.zip"><img src="https://img.shields.io/badge/Download-Source_ZIP-3b82f6?style=for-the-badge&logo=github&logoColor=white" alt="Download Source Code" /></a>
 </p>
 
 ---
 
-## 📱 About The App
+## 📺 About Harsh TV
 
-**Harsh** is a high-performance Android streaming application for movies and series. Built natively with Jetpack Compose and ExoPlayer, it features fast streaming and Telegram-Stremio source integration with smart codec fallback.
+**Harsh TV** is a professional Android TV (Leanback compatible) streaming application for movies and series. Fully optimized for large screens, landscape orientation, and 100% controllable via standard Android TV D-Pad remotes.
 
 ---
 
-## 🚀 Key Features
+## 🚀 Key Android TV & Player Features
 
-- **⚡ Hardware & Software Fallback**: Automatically switches to software decoding for HEVC (H.265) / 4K videos if hardware acceleration fails on budget devices.
-- **🔄 Complete State Reset**: Releases previous player instances and clears surface/codec state when switching streams (e.g. 4K to 1080p).
-- **🛡️ Device Capability Detection**: Intelligently selects the most optimal stream (H.264 / 1080p) on lower-end devices to prevent player crashes.
-- **📺 Telegram & Stremio Integration**: Access high-speed playback links across multiple sources.
-- **🎨 Modern Material 3 UI**: Clean, responsive layout supporting phones and foldables.
+- **🎯 100% D-Pad Remote Navigation**: Every element (cards, buttons, side drawer, player) features high-contrast glowing focus borders and 1.08x pop-up scaling.
+- **📺 Android TV Leanback Support**: Declared `<uses-feature android:name="android.software.leanback" />` and Leanback launcher banner (`tv_banner.xml`).
+- **🛡️ TV Overscan Safe Margins**: 24.dp TV-safe padding so UI elements never get clipped by physical TV borders.
+- **⚡ ExoPlayer D-Pad Remote Control**:
+  - **Left / Right**: Seek 10s backward / forward with visual feedback.
+  - **Center OK**: Toggle Play / Pause instantly.
+  - **Up / Down**: Open Audio/Subtitle tracks and Stream/Episode selector.
+  - **Auto-Hide**: Player controls automatically hide after 3 seconds of remote inactivity.
+- **🔄 Codec & Stream Resilience**: Software decoder fallback for HEVC/4K on low-end TV hardware and complete player state resets on resolution switches.
 
 ---
 

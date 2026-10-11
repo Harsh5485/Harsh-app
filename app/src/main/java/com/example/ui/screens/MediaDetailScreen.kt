@@ -1,5 +1,6 @@
 package com.example.ui.screens
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
@@ -83,7 +84,16 @@ import com.example.ui.theme.NuvioCard
 import com.example.ui.theme.NuvioCardBorder
 import com.example.ui.theme.NuvioGold
 import com.example.ui.theme.NuvioPrimary
+import com.example.ui.theme.NuvioPrimaryBright
 import com.example.ui.theme.NuvioSecondary
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.focus.onFocusChanged
+import androidx.compose.foundation.focusable
+import androidx.compose.ui.input.key.onKeyEvent
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.type
+import android.view.KeyEvent
 import com.example.ui.theme.NuvioSuccess
 import com.example.ui.theme.NuvioSurfaceVariant
 import com.example.ui.theme.NuvioTextMuted
@@ -95,6 +105,9 @@ import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.rememberModalBottomSheetState
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.spring
+import androidx.compose.animation.core.Spring
 import androidx.compose.ui.draw.blur
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.runtime.rememberCoroutineScope
@@ -108,9 +121,77 @@ fun MediaDetailScreen(
     modifier: Modifier = Modifier
 ) {
     val detailState by viewModel.detailState.collectAsState()
-    val mediaItem = detailState.mediaItem ?: return
-    val meta = detailState.metaDetail
+    val mediaItem = detailState.mediaItem
 
+    if (mediaItem == null) {
+        Box(
+            modifier = modifier
+                .fillMaxSize()
+                .background(NuvioBackground),
+            contentAlignment = Alignment.Center
+        ) {
+            Column(
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.Center
+            ) {
+                CircularProgressIndicator(
+                    color = NuvioPrimary,
+                    modifier = Modifier.size(48.dp),
+                    strokeWidth = 4.dp
+                )
+                Spacer(modifier = Modifier.height(16.dp))
+                Text(
+                    text = "Loading Details...",
+                    color = NuvioTextPrimary,
+                    fontSize = 16.sp,
+                    fontWeight = FontWeight.Bold
+                )
+            }
+            // Back Button
+            var isBackFocused by remember { mutableStateOf(false) }
+            IconButton(
+                onClick = onBackClick,
+                modifier = Modifier
+                    .align(Alignment.TopStart)
+                    .statusBarsPadding()
+                    .padding(16.dp)
+                    .size(44.dp)
+                    .onFocusChanged { isBackFocused = it.isFocused }
+                    .background(
+                        if (isBackFocused) NuvioPrimary else Color.Black.copy(alpha = 0.65f),
+                        CircleShape
+                    )
+                    .border(
+                        width = if (isBackFocused) 3.dp else 1.dp,
+                        color = if (isBackFocused) Color.White else NuvioCardBorder,
+                        shape = CircleShape
+                    )
+                    .onKeyEvent { keyEvent ->
+                        if (keyEvent.type == KeyEventType.KeyDown) {
+                            when (keyEvent.nativeKeyEvent.keyCode) {
+                                KeyEvent.KEYCODE_DPAD_CENTER,
+                                KeyEvent.KEYCODE_ENTER,
+                                KeyEvent.KEYCODE_NUMPAD_ENTER -> {
+                                    onBackClick()
+                                    true
+                                }
+                                else -> false
+                            }
+                        } else false
+                    }
+                    .focusable()
+            ) {
+                Icon(
+                    imageVector = Icons.AutoMirrored.Filled.ArrowBack,
+                    contentDescription = "Back",
+                    tint = if (isBackFocused) Color.Black else NuvioTextPrimary
+                )
+            }
+        }
+        return
+    }
+
+    val meta = detailState.metaDetail
     val isSeries = mediaItem.type.equals("series", true)
 
     var selectedEpisode by remember { mutableStateOf<VideoEpisode?>(null) }
@@ -119,6 +200,20 @@ fun MediaDetailScreen(
     val seasonSheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     val episodeSheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     val scope = rememberCoroutineScope()
+    val playButtonFocusRequester = remember { FocusRequester() }
+
+    BackHandler(enabled = showSeasonPicker || showEpisodeStreams) {
+        showSeasonPicker = false
+        showEpisodeStreams = false
+    }
+
+    // Auto-request focus on Play button when Details screen opens
+    androidx.compose.runtime.LaunchedEffect(mediaItem.id) {
+        kotlinx.coroutines.delay(200)
+        runCatching {
+            playButtonFocusRequester.requestFocus()
+        }
+    }
 
     // Auto-refresh logic for streams
     androidx.compose.runtime.LaunchedEffect(mediaItem.id, detailState.selectedEpisode?.id) {
@@ -302,6 +397,14 @@ fun MediaDetailScreen(
                         val context = LocalContext.current
                         val defaultStream = DeviceCodecHelper.selectBestCompatibleStream(detailState.streams, context) ?: detailState.streams.firstOrNull()
                         val qBadge = defaultStream?.displayQuality?.takeIf { it.isNotBlank() }?.let { "($it)" } ?: ""
+                        var isPlayFocused by remember { mutableStateOf(false) }
+
+                        val playScale by animateFloatAsState(
+                            targetValue = if (isPlayFocused) 1.08f else 1.0f,
+                            animationSpec = spring(dampingRatio = Spring.DampingRatioLowBouncy),
+                            label = "playScale"
+                        )
+
                         Button(
                             onClick = {
                                 if (defaultStream != null) {
@@ -313,17 +416,55 @@ fun MediaDetailScreen(
                                         episode = selectedEpisode?.episode,
                                         episodeTitle = selectedEpisode?.title
                                     )
+                                } else {
+                                    viewModel.loadStreams(mediaItem.type, mediaItem.id)
                                 }
                             },
-                            enabled = detailState.streams.isNotEmpty(),
+                            enabled = true,
                             shape = RoundedCornerShape(12.dp),
                             colors = ButtonDefaults.buttonColors(
-                                containerColor = NuvioPrimary,
+                                containerColor = if (isPlayFocused) NuvioPrimaryBright else NuvioPrimary,
                                 contentColor = Color.Black
                             ),
                             modifier = Modifier
                                 .weight(1f)
                                 .height(50.dp)
+                                .focusRequester(playButtonFocusRequester)
+                                .onFocusChanged { isPlayFocused = it.isFocused }
+                                .graphicsLayer {
+                                    scaleX = playScale
+                                    scaleY = playScale
+                                }
+                                .border(
+                                    width = if (isPlayFocused) 3.5.dp else 0.dp,
+                                    color = if (isPlayFocused) Color.White else Color.Transparent,
+                                    shape = RoundedCornerShape(12.dp)
+                                )
+                                .onKeyEvent { keyEvent ->
+                                    if (keyEvent.type == KeyEventType.KeyDown) {
+                                        when (keyEvent.nativeKeyEvent.keyCode) {
+                                            KeyEvent.KEYCODE_DPAD_CENTER,
+                                            KeyEvent.KEYCODE_ENTER,
+                                            KeyEvent.KEYCODE_NUMPAD_ENTER -> {
+                                                if (defaultStream != null) {
+                                                    viewModel.playStream(
+                                                        item = mediaItem,
+                                                        streamItem = defaultStream,
+                                                        availableStreams = detailState.streams,
+                                                        season = selectedEpisode?.season,
+                                                        episode = selectedEpisode?.episode,
+                                                        episodeTitle = selectedEpisode?.title
+                                                    )
+                                                } else {
+                                                    viewModel.loadStreams(mediaItem.type, mediaItem.id)
+                                                }
+                                                true
+                                            }
+                                            else -> false
+                                        }
+                                    } else false
+                                }
+                                .focusable()
                                 .testTag("detail_play_button")
                         ) {
                             Icon(
@@ -342,18 +483,41 @@ fun MediaDetailScreen(
                             )
                         }
 
+                        var isBookmarkFocused by remember { mutableStateOf(false) }
                         IconButton(
                             onClick = { viewModel.toggleWatchlist() },
                             modifier = Modifier
                                 .size(50.dp)
-                                .background(NuvioSurfaceVariant, RoundedCornerShape(12.dp))
-                                .border(1.dp, NuvioCardBorder, RoundedCornerShape(12.dp))
+                                .onFocusChanged { isBookmarkFocused = it.isFocused }
+                                .background(
+                                    if (isBookmarkFocused) NuvioPrimary else NuvioSurfaceVariant,
+                                    RoundedCornerShape(12.dp)
+                                )
+                                .border(
+                                    width = if (isBookmarkFocused) 3.dp else 1.dp,
+                                    color = if (isBookmarkFocused) Color.White else NuvioCardBorder,
+                                    shape = RoundedCornerShape(12.dp)
+                                )
+                                .onKeyEvent { keyEvent ->
+                                    if (keyEvent.type == KeyEventType.KeyDown) {
+                                        when (keyEvent.nativeKeyEvent.keyCode) {
+                                            KeyEvent.KEYCODE_DPAD_CENTER,
+                                            KeyEvent.KEYCODE_ENTER,
+                                            KeyEvent.KEYCODE_NUMPAD_ENTER -> {
+                                                viewModel.toggleWatchlist()
+                                                true
+                                            }
+                                            else -> false
+                                        }
+                                    } else false
+                                }
+                                .focusable()
                                 .testTag("detail_watchlist_toggle")
                         ) {
                             Icon(
                                 imageVector = if (detailState.isInWatchlist) Icons.Default.Bookmark else Icons.Default.BookmarkBorder,
                                 contentDescription = "Watchlist",
-                                tint = if (detailState.isInWatchlist) NuvioPrimary else NuvioTextPrimary
+                                tint = if (isBookmarkFocused) Color.Black else if (detailState.isInWatchlist) NuvioPrimary else NuvioTextPrimary
                             )
                         }
                     }
@@ -481,14 +645,34 @@ fun MediaDetailScreen(
 
                         // Season Selector Dropdown Button
                         if (detailState.seasons.isNotEmpty()) {
+                            var isSeasonFocused by remember { mutableStateOf(false) }
                             Surface(
                                 shape = RoundedCornerShape(12.dp),
-                                color = NuvioSurfaceVariant,
+                                color = if (isSeasonFocused) NuvioPrimaryBright else NuvioSurfaceVariant,
                                 modifier = Modifier
                                     .padding(horizontal = 16.dp)
                                     .fillMaxWidth()
+                                    .onFocusChanged { isSeasonFocused = it.isFocused }
+                                    .border(
+                                        width = if (isSeasonFocused) 3.5.dp else 1.dp,
+                                        color = if (isSeasonFocused) Color.White else NuvioCardBorder,
+                                        shape = RoundedCornerShape(12.dp)
+                                    )
+                                    .onKeyEvent { keyEvent ->
+                                        if (keyEvent.type == KeyEventType.KeyDown) {
+                                            when (keyEvent.nativeKeyEvent.keyCode) {
+                                                KeyEvent.KEYCODE_DPAD_CENTER,
+                                                KeyEvent.KEYCODE_ENTER,
+                                                KeyEvent.KEYCODE_NUMPAD_ENTER -> {
+                                                    showSeasonPicker = true
+                                                    true
+                                                }
+                                                else -> false
+                                            }
+                                        } else false
+                                    }
+                                    .focusable()
                                     .clickable { showSeasonPicker = true }
-                                    .border(1.dp, NuvioCardBorder, RoundedCornerShape(12.dp))
                             ) {
                                 Row(
                                     modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp),
@@ -498,14 +682,14 @@ fun MediaDetailScreen(
                                     Column {
                                         Text(
                                             text = "SEASON",
-                                            color = NuvioTextMuted,
+                                            color = if (isSeasonFocused) Color.Black.copy(alpha = 0.7f) else NuvioTextMuted,
                                             fontSize = 9.sp,
                                             fontWeight = FontWeight.Bold,
                                             letterSpacing = 1.sp
                                         )
                                         Text(
                                             text = if (detailState.selectedSeason == 0) "Specials" else "Season ${detailState.selectedSeason}",
-                                            color = NuvioPrimary,
+                                            color = if (isSeasonFocused) Color.Black else NuvioPrimary,
                                             fontSize = 16.sp,
                                             fontWeight = FontWeight.ExtraBold
                                         )
@@ -513,7 +697,7 @@ fun MediaDetailScreen(
                                     Icon(
                                         imageVector = Icons.Default.KeyboardArrowDown,
                                         contentDescription = "Select Season",
-                                        tint = NuvioPrimary
+                                        tint = if (isSeasonFocused) Color.Black else NuvioPrimary
                                     )
                                 }
                             }
@@ -531,13 +715,49 @@ fun MediaDetailScreen(
                                 // Single episodes list
                                 detailState.seasonEpisodes.forEach { ep ->
                                     val isChosen = detailState.selectedEpisode?.id == ep.id
+                                    var isEpFocused by remember { mutableStateOf(false) }
+                                    val epScale by animateFloatAsState(
+                                        targetValue = if (isEpFocused) 1.03f else 1f,
+                                        animationSpec = spring(dampingRatio = Spring.DampingRatioLowBouncy),
+                                        label = "epScale"
+                                    )
+
                                     Card(
                                         shape = RoundedCornerShape(12.dp),
                                         colors = CardDefaults.cardColors(
-                                            containerColor = if (isChosen) NuvioSurfaceVariant else Color.Transparent
+                                            containerColor = when {
+                                                isEpFocused -> NuvioPrimaryBright
+                                                isChosen -> NuvioSurfaceVariant
+                                                else -> Color.Transparent
+                                            }
                                         ),
                                         modifier = Modifier
                                             .fillMaxWidth()
+                                            .onFocusChanged { isEpFocused = it.isFocused }
+                                            .graphicsLayer {
+                                                scaleX = epScale
+                                                scaleY = epScale
+                                            }
+                                            .border(
+                                                width = if (isEpFocused) 3.5.dp else if (isChosen) 1.5.dp else 0.5.dp,
+                                                color = if (isEpFocused) Color.White else if (isChosen) NuvioPrimary else NuvioCardBorder.copy(alpha = 0.5f),
+                                                shape = RoundedCornerShape(12.dp)
+                                            )
+                                            .onKeyEvent { keyEvent ->
+                                                if (keyEvent.type == KeyEventType.KeyDown) {
+                                                    when (keyEvent.nativeKeyEvent.keyCode) {
+                                                        KeyEvent.KEYCODE_DPAD_CENTER,
+                                                        KeyEvent.KEYCODE_ENTER,
+                                                        KeyEvent.KEYCODE_NUMPAD_ENTER -> {
+                                                            viewModel.loadEpisodeStreams(ep)
+                                                            showEpisodeStreams = true
+                                                            true
+                                                        }
+                                                        else -> false
+                                                    }
+                                                } else false
+                                            }
+                                            .focusable()
                                             .clickable { 
                                                 viewModel.loadEpisodeStreams(ep)
                                                 showEpisodeStreams = true
@@ -648,18 +868,53 @@ fun MediaDetailScreen(
                                 
                                 detailState.combinedFiles.forEach { pack ->
                                     val isChosen = detailState.selectedEpisode?.id == pack.id
+                                    var isPackFocused by remember { mutableStateOf(false) }
+                                    val packScale by animateFloatAsState(
+                                        targetValue = if (isPackFocused) 1.03f else 1f,
+                                        animationSpec = spring(dampingRatio = Spring.DampingRatioLowBouncy),
+                                        label = "packScale"
+                                    )
+
                                     Card(
                                         shape = RoundedCornerShape(12.dp),
                                         colors = CardDefaults.cardColors(
-                                            containerColor = if (isChosen) NuvioPrimary.copy(alpha = 0.1f) else NuvioSurfaceVariant.copy(alpha = 0.4f)
+                                            containerColor = when {
+                                                isPackFocused -> NuvioPrimaryBright
+                                                isChosen -> NuvioSurfaceVariant
+                                                else -> NuvioSurfaceVariant.copy(alpha = 0.4f)
+                                            }
                                         ),
                                         modifier = Modifier
                                             .fillMaxWidth()
+                                            .onFocusChanged { isPackFocused = it.isFocused }
+                                            .graphicsLayer {
+                                                scaleX = packScale
+                                                scaleY = packScale
+                                            }
+                                            .border(
+                                                width = if (isPackFocused) 3.5.dp else if (isChosen) 1.5.dp else 1.dp,
+                                                color = if (isPackFocused) Color.White else if (isChosen) NuvioPrimary else NuvioCardBorder,
+                                                shape = RoundedCornerShape(12.dp)
+                                            )
+                                            .onKeyEvent { keyEvent ->
+                                                if (keyEvent.type == KeyEventType.KeyDown) {
+                                                    when (keyEvent.nativeKeyEvent.keyCode) {
+                                                        KeyEvent.KEYCODE_DPAD_CENTER,
+                                                        KeyEvent.KEYCODE_ENTER,
+                                                        KeyEvent.KEYCODE_NUMPAD_ENTER -> {
+                                                            viewModel.loadEpisodeStreams(pack)
+                                                            showEpisodeStreams = true
+                                                            true
+                                                        }
+                                                        else -> false
+                                                    }
+                                                } else false
+                                            }
+                                            .focusable()
                                             .clickable { 
                                                 viewModel.loadEpisodeStreams(pack)
                                                 showEpisodeStreams = true
                                             }
-                                            .border(1.dp, if (isChosen) NuvioPrimary.copy(alpha = 0.5f) else NuvioCardBorder, RoundedCornerShape(12.dp))
                                     ) {
                                         Row(
                                             modifier = Modifier.padding(14.dp),
@@ -871,13 +1126,48 @@ fun MediaDetailScreen(
                     LazyColumn(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .height(300.dp)
+                            .height(320.dp)
                     ) {
                         items(detailState.seasons) { season ->
                             val isSelected = detailState.selectedSeason == season
+                            var isSeasonItemFocused by remember { mutableStateOf(false) }
+
                             Row(
                                 modifier = Modifier
                                     .fillMaxWidth()
+                                    .padding(horizontal = 12.dp, vertical = 4.dp)
+                                    .onFocusChanged { isSeasonItemFocused = it.isFocused }
+                                    .border(
+                                        width = if (isSeasonItemFocused) 3.dp else 0.dp,
+                                        color = if (isSeasonItemFocused) Color.White else Color.Transparent,
+                                        shape = RoundedCornerShape(10.dp)
+                                    )
+                                    .background(
+                                        when {
+                                            isSeasonItemFocused -> NuvioPrimaryBright
+                                            isSelected -> NuvioPrimary.copy(alpha = 0.2f)
+                                            else -> Color.Transparent
+                                        },
+                                        RoundedCornerShape(10.dp)
+                                    )
+                                    .onKeyEvent { keyEvent ->
+                                        if (keyEvent.type == KeyEventType.KeyDown) {
+                                            when (keyEvent.nativeKeyEvent.keyCode) {
+                                                KeyEvent.KEYCODE_DPAD_CENTER,
+                                                KeyEvent.KEYCODE_ENTER,
+                                                KeyEvent.KEYCODE_NUMPAD_ENTER -> {
+                                                    viewModel.selectSeason(season)
+                                                    scope.launch {
+                                                        seasonSheetState.hide()
+                                                        showSeasonPicker = false
+                                                    }
+                                                    true
+                                                }
+                                                else -> false
+                                            }
+                                        } else false
+                                    }
+                                    .focusable()
                                     .clickable {
                                         viewModel.selectSeason(season)
                                         scope.launch {
@@ -885,22 +1175,21 @@ fun MediaDetailScreen(
                                             showSeasonPicker = false
                                         }
                                     }
-                                    .background(if (isSelected) NuvioPrimary.copy(alpha = 0.1f) else Color.Transparent)
-                                    .padding(horizontal = 24.dp, vertical = 16.dp),
+                                    .padding(horizontal = 20.dp, vertical = 14.dp),
                                 verticalAlignment = Alignment.CenterVertically,
                                 horizontalArrangement = Arrangement.SpaceBetween
                             ) {
                                 Text(
                                     text = if (season == 0) "Specials" else "Season $season",
-                                    color = if (isSelected) NuvioPrimary else NuvioTextPrimary,
+                                    color = if (isSeasonItemFocused) Color.Black else if (isSelected) NuvioPrimary else NuvioTextPrimary,
                                     fontSize = 16.sp,
-                                    fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium
+                                    fontWeight = if (isSeasonItemFocused || isSelected) FontWeight.Bold else FontWeight.Medium
                                 )
                                 if (isSelected) {
                                     Icon(
                                         imageVector = Icons.Default.CheckCircle,
                                         contentDescription = null,
-                                        tint = NuvioPrimary,
+                                        tint = if (isSeasonItemFocused) Color.Black else NuvioPrimary,
                                         modifier = Modifier.size(20.dp)
                                     )
                                 }
@@ -974,18 +1263,41 @@ fun MediaDetailScreen(
             horizontalArrangement = Arrangement.Start,
             verticalAlignment = Alignment.CenterVertically
         ) {
+            var isBackFocused by remember { mutableStateOf(false) }
             IconButton(
                 onClick = onBackClick,
                 modifier = Modifier
-                    .background(Color.Black.copy(alpha = 0.65f), CircleShape)
-                    .border(1.dp, NuvioCardBorder, CircleShape)
+                    .onFocusChanged { isBackFocused = it.isFocused }
+                    .background(
+                        if (isBackFocused) NuvioPrimary else Color.Black.copy(alpha = 0.65f),
+                        CircleShape
+                    )
+                    .border(
+                        width = if (isBackFocused) 3.dp else 1.dp,
+                        color = if (isBackFocused) Color.White else NuvioCardBorder,
+                        shape = CircleShape
+                    )
                     .size(42.dp)
+                    .onKeyEvent { keyEvent ->
+                        if (keyEvent.type == KeyEventType.KeyDown) {
+                            when (keyEvent.nativeKeyEvent.keyCode) {
+                                KeyEvent.KEYCODE_DPAD_CENTER,
+                                KeyEvent.KEYCODE_ENTER,
+                                KeyEvent.KEYCODE_NUMPAD_ENTER -> {
+                                    onBackClick()
+                                    true
+                                }
+                                else -> false
+                            }
+                        } else false
+                    }
+                    .focusable()
                     .testTag("detail_back_button")
             ) {
                 Icon(
                     imageVector = Icons.AutoMirrored.Filled.ArrowBack,
                     contentDescription = "Back",
-                    tint = NuvioTextPrimary
+                    tint = if (isBackFocused) Color.Black else NuvioTextPrimary
                 )
             }
         }
@@ -1040,12 +1352,44 @@ fun StreamOptionCard(
     onDownload: (() -> Unit)? = null,
     modifier: Modifier = Modifier
 ) {
+    var isFocused by remember { mutableStateOf(false) }
+    val scale by animateFloatAsState(
+        targetValue = if (isFocused) 1.04f else 1f,
+        animationSpec = spring(dampingRatio = Spring.DampingRatioLowBouncy),
+        label = "streamCardScale"
+    )
+
     Card(
         shape = RoundedCornerShape(12.dp),
-        colors = CardDefaults.cardColors(containerColor = NuvioCard),
+        colors = CardDefaults.cardColors(
+            containerColor = if (isFocused) NuvioPrimaryBright else NuvioCard
+        ),
         modifier = modifier
             .fillMaxWidth()
-            .border(1.dp, NuvioCardBorder, RoundedCornerShape(12.dp))
+            .onFocusChanged { isFocused = it.isFocused }
+            .graphicsLayer {
+                scaleX = scale
+                scaleY = scale
+            }
+            .border(
+                width = if (isFocused) 3.5.dp else 1.dp,
+                color = if (isFocused) Color.White else NuvioCardBorder,
+                shape = RoundedCornerShape(12.dp)
+            )
+            .onKeyEvent { keyEvent ->
+                if (keyEvent.type == KeyEventType.KeyDown) {
+                    when (keyEvent.nativeKeyEvent.keyCode) {
+                        KeyEvent.KEYCODE_DPAD_CENTER,
+                        KeyEvent.KEYCODE_ENTER,
+                        KeyEvent.KEYCODE_NUMPAD_ENTER -> {
+                            onPlay()
+                            true
+                        }
+                        else -> false
+                    }
+                } else false
+            }
+            .focusable()
             .clickable(onClick = onPlay)
             .testTag("stream_option_card")
     ) {

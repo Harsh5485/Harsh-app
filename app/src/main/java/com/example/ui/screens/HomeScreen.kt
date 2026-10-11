@@ -52,6 +52,13 @@ import androidx.compose.animation.fadeIn
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
+import androidx.compose.foundation.focusable
+import androidx.compose.ui.focus.onFocusChanged
+import androidx.compose.ui.input.key.onKeyEvent
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.type
+import android.view.KeyEvent
+import com.example.ui.theme.NuvioPrimaryBright
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import kotlinx.coroutines.delay
@@ -152,7 +159,7 @@ fun HomeScreen(
                     // Actions: Server Badge, Search, Settings
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(4.dp)
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
                         ServerStatusBadge(
                             isConnected = serverState.isConnected,
@@ -160,30 +167,80 @@ fun HomeScreen(
                             onClick = onSettingsClick
                         )
 
+                        var isSearchFocused by remember { mutableStateOf(false) }
                         IconButton(
                             onClick = onSearchClick,
                             modifier = Modifier
-                                .size(32.dp)
+                                .size(36.dp)
+                                .onFocusChanged { isSearchFocused = it.isFocused }
+                                .background(
+                                    if (isSearchFocused) NuvioPrimaryBright else NuvioSurfaceVariant,
+                                    CircleShape
+                                )
+                                .border(
+                                    width = if (isSearchFocused) 2.5.dp else 1.dp,
+                                    color = if (isSearchFocused) Color.White else NuvioCardBorder,
+                                    shape = CircleShape
+                                )
+                                .onKeyEvent { keyEvent ->
+                                    if (keyEvent.type == KeyEventType.KeyDown) {
+                                        when (keyEvent.nativeKeyEvent.keyCode) {
+                                            KeyEvent.KEYCODE_DPAD_CENTER,
+                                            KeyEvent.KEYCODE_ENTER,
+                                            KeyEvent.KEYCODE_NUMPAD_ENTER -> {
+                                                onSearchClick()
+                                                true
+                                            }
+                                            else -> false
+                                        }
+                                    } else false
+                                }
+                                .focusable()
                                 .testTag("home_search_button")
                         ) {
                             Icon(
                                 imageVector = Icons.Default.Search,
                                 contentDescription = "Search",
-                                tint = NuvioTextPrimary,
+                                tint = if (isSearchFocused) Color.Black else NuvioTextPrimary,
                                 modifier = Modifier.size(18.dp)
                             )
                         }
 
+                        var isRefreshFocused by remember { mutableStateOf(false) }
                         IconButton(
                             onClick = { viewModel.loadHomeData() },
                             modifier = Modifier
-                                .size(32.dp)
+                                .size(36.dp)
+                                .onFocusChanged { isRefreshFocused = it.isFocused }
+                                .background(
+                                    if (isRefreshFocused) NuvioPrimaryBright else NuvioSurfaceVariant,
+                                    CircleShape
+                                )
+                                .border(
+                                    width = if (isRefreshFocused) 2.5.dp else 1.dp,
+                                    color = if (isRefreshFocused) Color.White else NuvioCardBorder,
+                                    shape = CircleShape
+                                )
+                                .onKeyEvent { keyEvent ->
+                                    if (keyEvent.type == KeyEventType.KeyDown) {
+                                        when (keyEvent.nativeKeyEvent.keyCode) {
+                                            KeyEvent.KEYCODE_DPAD_CENTER,
+                                            KeyEvent.KEYCODE_ENTER,
+                                            KeyEvent.KEYCODE_NUMPAD_ENTER -> {
+                                                viewModel.loadHomeData()
+                                                true
+                                            }
+                                            else -> false
+                                        }
+                                    } else false
+                                }
+                                .focusable()
                                 .testTag("home_refresh_button")
                         ) {
                             Icon(
                                 imageVector = Icons.Default.Refresh,
                                 contentDescription = "Refresh",
-                                tint = NuvioTextSecondary,
+                                tint = if (isRefreshFocused) Color.Black else NuvioTextSecondary,
                                 modifier = Modifier.size(18.dp)
                             )
                         }
@@ -297,19 +354,43 @@ fun GenreChip(
     isSelected: Boolean,
     onClick: () -> Unit
 ) {
+    var isFocused by remember { mutableStateOf(false) }
     Surface(
         modifier = Modifier
             .clip(RoundedCornerShape(12.dp))
+            .onFocusChanged { isFocused = it.isFocused }
+            .border(
+                width = if (isFocused) 3.dp else if (!isSelected) 1.dp else 0.dp,
+                color = if (isFocused) Color.White else NuvioCardBorder,
+                shape = RoundedCornerShape(12.dp)
+            )
+            .onKeyEvent { keyEvent ->
+                if (keyEvent.type == KeyEventType.KeyDown) {
+                    when (keyEvent.nativeKeyEvent.keyCode) {
+                        KeyEvent.KEYCODE_DPAD_CENTER,
+                        KeyEvent.KEYCODE_ENTER,
+                        KeyEvent.KEYCODE_NUMPAD_ENTER -> {
+                            onClick()
+                            true
+                        }
+                        else -> false
+                    }
+                } else false
+            }
+            .focusable()
             .clickable(onClick = onClick),
-        color = if (isSelected) NuvioPrimary else NuvioSurfaceVariant,
-        shape = RoundedCornerShape(12.dp),
-        border = if (!isSelected) BorderStroke(1.dp, NuvioCardBorder) else null
+        color = when {
+            isFocused -> NuvioPrimaryBright
+            isSelected -> NuvioPrimary
+            else -> NuvioSurfaceVariant
+        },
+        shape = RoundedCornerShape(12.dp)
     ) {
         Text(
             text = label,
-            color = if (isSelected) Color.Black else NuvioTextPrimary,
+            color = if (isFocused || isSelected) Color.Black else NuvioTextPrimary,
             fontSize = 13.sp,
-            fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
+            fontWeight = if (isFocused || isSelected) FontWeight.Bold else FontWeight.Medium,
             modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)
         )
     }

@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="320dp"
+    android:height="180dp"
+    android:viewportWidth="320"
+    android:viewportHeight="180">
+    <!-- Dark TV Slate Background -->
+    <path
+        android:fillColor="#0F172A"
+        android:pathData="M0,0h320v180h-320z" />
+
+    <!-- Subtle Inner Glow Border -->
+    <path
+        android:fillColor="#1E293B"
+        android:pathData="M12,12h296v156h-296z" />
+
+    <!-- Left Cyan Accent Line -->
+    <path
+        android:fillColor="#38BDF8"
+        android:pathData="M24,24h8v132h-8z" />
+
+    <!-- Play Badge Circle -->
+    <path
+        android:fillColor="#38BDF8"
+        android:pathData="M95,90m-26,0a26,26 0 1,0 52,0a26,26 0 1,0 -52,0" />
+
+    <!-- Play Triangle -->
+    <path
+        android:fillColor="#020617"
+        android:pathData="M88,77l20,13l-20,13z" />
+
+    <!-- Harsh TV Brand Accent Bars -->
+    <path
+        android:fillColor="#38BDF8"
+        android:pathData="M140,65h140v14h-140z" />
+
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M140,88h110v10h-110z" />
+
+    <path
+        android:fillColor="#818CF8"
+        android:pathData="M140,106h80v8h-80z" />
+</vector>

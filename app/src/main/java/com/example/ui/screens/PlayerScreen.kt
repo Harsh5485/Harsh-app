@@ -25,6 +25,14 @@ import androidx.compose.animation.scaleIn
 import androidx.compose.animation.scaleOut
 import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideOutHorizontally
+import androidx.compose.foundation.focusable
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.focus.onFocusChanged
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.onKeyEvent
+import androidx.compose.ui.input.key.type
+import android.view.KeyEvent
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -158,6 +166,11 @@ import com.example.ui.player.AppSubtitleTrack
 import com.example.ui.player.AppVideoTrack
 import com.example.ui.player.PlayerTrackHelper
 import com.example.ui.player.MediaCodecInfo
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.spring
+import androidx.compose.animation.core.Spring
+import androidx.compose.ui.graphics.graphicsLayer
+import com.example.ui.theme.NuvioPrimaryBright
 import com.example.ui.theme.NuvioBackground
 import com.example.ui.theme.NuvioCard
 import com.example.ui.theme.NuvioCardBorder
@@ -756,34 +769,100 @@ fun PlayerScreen(
         }
     }
 
-    // Auto-hide controls after 4.5 seconds
+    // Auto-hide controls after 3 seconds of remote inactivity on TV
     LaunchedEffect(controlsVisible, isPlaying, isScreenLocked) {
         if (controlsVisible && isPlaying && !isScreenLocked) {
-            delay(4500)
+            delay(3000)
             controlsVisible = false
         }
     }
 
-    // Double tap feedback timer
-    LaunchedEffect(doubleTapFeedback) {
-        if (doubleTapFeedback != null) {
-            delay(750)
-            doubleTapFeedback = null
-        }
-    }
-
-    // Orientation change feedback timer
-    LaunchedEffect(orientationFeedback) {
-        if (orientationFeedback != null) {
-            delay(1200)
-            orientationFeedback = null
-        }
+    val tvFocusRequester = remember { FocusRequester() }
+    LaunchedEffect(Unit) {
+        try { tvFocusRequester.requestFocus() } catch (_: Exception) {}
     }
 
     Box(
         modifier = modifier
             .fillMaxSize()
             .background(Color.Black)
+            .focusRequester(tvFocusRequester)
+            .focusable()
+            .onKeyEvent { keyEvent ->
+                if (keyEvent.type == KeyEventType.KeyDown) {
+                    when (keyEvent.nativeKeyEvent.keyCode) {
+                        KeyEvent.KEYCODE_DPAD_CENTER,
+                        KeyEvent.KEYCODE_ENTER,
+                        KeyEvent.KEYCODE_NUMPAD_ENTER -> {
+                            controlsVisible = true
+                            if (isPlaying) exoPlayer.pause() else exoPlayer.play()
+                            true
+                        }
+                        KeyEvent.KEYCODE_DPAD_LEFT -> {
+                            controlsVisible = true
+                            isSeeking = true
+                            isLoading = true
+                            val basePos = if (currentPosMs > 0L) currentPosMs else exoPlayer.currentPosition.coerceAtLeast(0L)
+                            val newPos = (basePos - 10000L).coerceAtLeast(0L)
+                            currentPosMs = newPos
+                            exoPlayer.seekTo(newPos)
+                            doubleTapFeedback = "-10s"
+                            true
+                        }
+                        KeyEvent.KEYCODE_DPAD_RIGHT -> {
+                            controlsVisible = true
+                            isSeeking = true
+                            isLoading = true
+                            val basePos = if (currentPosMs > 0L) currentPosMs else exoPlayer.currentPosition.coerceAtLeast(0L)
+                            val maxDur = if (totalDurationMs > 0L) totalDurationMs else if (exoPlayer.duration > 0L) exoPlayer.duration else Long.MAX_VALUE
+                            val newPos = (basePos + 10000L).coerceIn(0L, maxDur)
+                            currentPosMs = newPos
+                            exoPlayer.seekTo(newPos)
+                            doubleTapFeedback = "+10s"
+                            true
+                        }
+                        KeyEvent.KEYCODE_DPAD_UP -> {
+                            controlsVisible = true
+                            activeSheet = PlayerSheetType.STREAMS
+                            true
+                        }
+                        KeyEvent.KEYCODE_DPAD_DOWN -> {
+                            controlsVisible = true
+                            activeSheet = PlayerSheetType.AUDIO
+                            true
+                        }
+                        KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE -> {
+                            controlsVisible = true
+                            if (isPlaying) exoPlayer.pause() else exoPlayer.play()
+                            true
+                        }
+                        KeyEvent.KEYCODE_MEDIA_PLAY -> {
+                            controlsVisible = true
+                            exoPlayer.play()
+                            true
+                        }
+                        KeyEvent.KEYCODE_MEDIA_PAUSE -> {
+                            controlsVisible = true
+                            exoPlayer.pause()
+                            true
+                        }
+                        KeyEvent.KEYCODE_BACK -> {
+                            if (activeSheet != PlayerSheetType.NONE) {
+                                activeSheet = PlayerSheetType.NONE
+                                true
+                            } else if (controlsVisible) {
+                                controlsVisible = false
+                                true
+                            } else {
+                                false
+                            }
+                        }
+                        else -> false
+                    }
+                } else {
+                    false
+                }
+            }
             .pointerInput(isScreenLocked) {
                 detectTapGestures(
                     onTap = {
@@ -1818,31 +1897,61 @@ private fun AudioTracksSheet(
         } else {
             LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 items(tracks, key = { it.id }) { track ->
+                    var isFocused by remember { mutableStateOf(false) }
+                    val scale by animateFloatAsState(
+                        targetValue = if (isFocused) 1.04f else 1f,
+                        animationSpec = spring(dampingRatio = Spring.DampingRatioLowBouncy),
+                        label = "audioFocusScale"
+                    )
+
                     Card(
                         shape = RoundedCornerShape(12.dp),
                         colors = CardDefaults.cardColors(
-                            containerColor = if (track.isSelected) NuvioSurfaceVariant else NuvioBackground
+                            containerColor = when {
+                                isFocused -> NuvioPrimaryBright
+                                track.isSelected -> NuvioSurfaceVariant
+                                else -> NuvioBackground
+                            }
                         ),
                         modifier = Modifier
                             .fillMaxWidth()
+                            .onFocusChanged { isFocused = it.isFocused }
+                            .graphicsLayer {
+                                scaleX = scale
+                                scaleY = scale
+                            }
                             .border(
-                                1.dp,
-                                if (track.isSelected) NuvioPrimary else NuvioCardBorder,
-                                RoundedCornerShape(12.dp)
+                                width = if (isFocused) 3.5.dp else 1.dp,
+                                color = if (isFocused) Color.White else if (track.isSelected) NuvioPrimary else NuvioCardBorder,
+                                shape = RoundedCornerShape(12.dp)
                             )
+                            .onKeyEvent { keyEvent ->
+                                if (keyEvent.type == KeyEventType.KeyDown) {
+                                    when (keyEvent.nativeKeyEvent.keyCode) {
+                                        KeyEvent.KEYCODE_DPAD_CENTER,
+                                        KeyEvent.KEYCODE_ENTER,
+                                        KeyEvent.KEYCODE_NUMPAD_ENTER -> {
+                                            onSelect(track)
+                                            true
+                                        }
+                                        else -> false
+                                    }
+                                } else false
+                            }
+                            .focusable()
                             .clickable { onSelect(track) }
                     ) {
                         Row(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .padding(12.dp),
+                                .padding(14.dp),
                             horizontalArrangement = Arrangement.SpaceBetween,
                             verticalAlignment = Alignment.CenterVertically
                         ) {
                             Column {
                                 Text(
                                     text = track.language,
-                                    color = NuvioTextPrimary,
+                                    color = if (isFocused) Color.Black else NuvioTextPrimary,
                                     fontSize = 14.sp,
                                     fontWeight = FontWeight.Bold
                                 )
@@ -1850,11 +1959,11 @@ private fun AudioTracksSheet(
                                 Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                                     Surface(
                                         shape = RoundedCornerShape(4.dp),
-                                        color = NuvioSurfaceVariant
+                                        color = if (isFocused) Color.Black.copy(alpha = 0.2f) else NuvioSurfaceVariant
                                     ) {
                                         Text(
                                             text = track.channels,
-                                            color = NuvioSecondary,
+                                            color = if (isFocused) Color.Black else NuvioSecondary,
                                             fontSize = 11.sp,
                                             fontWeight = FontWeight.SemiBold,
                                             modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
@@ -1862,11 +1971,11 @@ private fun AudioTracksSheet(
                                     }
                                     Surface(
                                         shape = RoundedCornerShape(4.dp),
-                                        color = NuvioSurfaceVariant
+                                        color = if (isFocused) Color.Black.copy(alpha = 0.2f) else NuvioSurfaceVariant
                                     ) {
                                         Text(
                                             text = track.codec,
-                                            color = NuvioTextSecondary,
+                                            color = if (isFocused) Color.Black else NuvioTextSecondary,
                                             fontSize = 11.sp,
                                             modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
                                         )
@@ -1878,7 +1987,7 @@ private fun AudioTracksSheet(
                                 Icon(
                                     imageVector = Icons.Default.Check,
                                     contentDescription = "Active",
-                                    tint = NuvioPrimary,
+                                    tint = if (isFocused) Color.Black else NuvioPrimary,
                                     modifier = Modifier.size(22.dp)
                                 )
                             }
@@ -1923,18 +2032,48 @@ private fun SubtitleTracksSheet(
 
         // "Off" option
         val isNoneSelected = tracks.none { it.isSelected }
+        var isOffFocused by remember { mutableStateOf(false) }
+        val offScale by animateFloatAsState(
+            targetValue = if (isOffFocused) 1.04f else 1f,
+            animationSpec = spring(dampingRatio = Spring.DampingRatioLowBouncy),
+            label = "offFocusScale"
+        )
+
         Card(
             shape = RoundedCornerShape(12.dp),
             colors = CardDefaults.cardColors(
-                containerColor = if (isNoneSelected) NuvioSurfaceVariant else NuvioBackground
+                containerColor = when {
+                    isOffFocused -> NuvioPrimaryBright
+                    isNoneSelected -> NuvioSurfaceVariant
+                    else -> NuvioBackground
+                }
             ),
             modifier = Modifier
                 .fillMaxWidth()
+                .onFocusChanged { isOffFocused = it.isFocused }
+                .graphicsLayer {
+                    scaleX = offScale
+                    scaleY = offScale
+                }
                 .border(
-                    1.dp,
-                    if (isNoneSelected) NuvioPrimary else NuvioCardBorder,
-                    RoundedCornerShape(12.dp)
+                    width = if (isOffFocused) 3.5.dp else 1.dp,
+                    color = if (isOffFocused) Color.White else if (isNoneSelected) NuvioPrimary else NuvioCardBorder,
+                    shape = RoundedCornerShape(12.dp)
                 )
+                .onKeyEvent { keyEvent ->
+                    if (keyEvent.type == KeyEventType.KeyDown) {
+                        when (keyEvent.nativeKeyEvent.keyCode) {
+                            KeyEvent.KEYCODE_DPAD_CENTER,
+                            KeyEvent.KEYCODE_ENTER,
+                            KeyEvent.KEYCODE_NUMPAD_ENTER -> {
+                                onSelect(null)
+                                true
+                            }
+                            else -> false
+                        }
+                    } else false
+                }
+                .focusable()
                 .clickable { onSelect(null) }
         ) {
             Row(
@@ -1946,7 +2085,7 @@ private fun SubtitleTracksSheet(
             ) {
                 Text(
                     text = "Subtitles Off",
-                    color = NuvioTextPrimary,
+                    color = if (isOffFocused) Color.Black else NuvioTextPrimary,
                     fontSize = 14.sp,
                     fontWeight = FontWeight.Bold
                 )
@@ -1954,7 +2093,7 @@ private fun SubtitleTracksSheet(
                     Icon(
                         imageVector = Icons.Default.Check,
                         contentDescription = "Active",
-                        tint = NuvioPrimary,
+                        tint = if (isOffFocused) Color.Black else NuvioPrimary,
                         modifier = Modifier.size(22.dp)
                     )
                 }
@@ -1965,18 +2104,48 @@ private fun SubtitleTracksSheet(
 
         LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
             items(tracks, key = { it.id }) { track ->
+                var isFocused by remember { mutableStateOf(false) }
+                val scale by animateFloatAsState(
+                    targetValue = if (isFocused) 1.04f else 1f,
+                    animationSpec = spring(dampingRatio = Spring.DampingRatioLowBouncy),
+                    label = "subFocusScale"
+                )
+
                 Card(
                     shape = RoundedCornerShape(12.dp),
                     colors = CardDefaults.cardColors(
-                        containerColor = if (track.isSelected) NuvioSurfaceVariant else NuvioBackground
+                        containerColor = when {
+                            isFocused -> NuvioPrimaryBright
+                            track.isSelected -> NuvioSurfaceVariant
+                            else -> NuvioBackground
+                        }
                     ),
                     modifier = Modifier
                         .fillMaxWidth()
+                        .onFocusChanged { isFocused = it.isFocused }
+                        .graphicsLayer {
+                            scaleX = scale
+                            scaleY = scale
+                        }
                         .border(
-                            1.dp,
-                            if (track.isSelected) NuvioPrimary else NuvioCardBorder,
-                            RoundedCornerShape(12.dp)
+                            width = if (isFocused) 3.5.dp else 1.dp,
+                            color = if (isFocused) Color.White else if (track.isSelected) NuvioPrimary else NuvioCardBorder,
+                            shape = RoundedCornerShape(12.dp)
                         )
+                        .onKeyEvent { keyEvent ->
+                            if (keyEvent.type == KeyEventType.KeyDown) {
+                                when (keyEvent.nativeKeyEvent.keyCode) {
+                                    KeyEvent.KEYCODE_DPAD_CENTER,
+                                    KeyEvent.KEYCODE_ENTER,
+                                    KeyEvent.KEYCODE_NUMPAD_ENTER -> {
+                                        onSelect(track)
+                                        true
+                                    }
+                                    else -> false
+                                }
+                            } else false
+                        }
+                        .focusable()
                         .clickable { onSelect(track) }
                 ) {
                     Row(
@@ -1989,14 +2158,14 @@ private fun SubtitleTracksSheet(
                         Column {
                             Text(
                                 text = track.language,
-                                color = NuvioTextPrimary,
+                                color = if (isFocused) Color.Black else NuvioTextPrimary,
                                 fontSize = 14.sp,
                                 fontWeight = FontWeight.Bold
                             )
                             if (track.label != track.language) {
                                 Text(
                                     text = track.label,
-                                    color = NuvioTextSecondary,
+                                    color = if (isFocused) Color.Black.copy(alpha = 0.8f) else NuvioTextSecondary,
                                     fontSize = 11.sp
                                 )
                             }
@@ -2006,7 +2175,7 @@ private fun SubtitleTracksSheet(
                             Icon(
                                 imageVector = Icons.Default.Check,
                                 contentDescription = "Active",
-                                tint = NuvioPrimary,
+                                tint = if (isFocused) Color.Black else NuvioPrimary,
                                 modifier = Modifier.size(22.dp)
                             )
                         }
@@ -2041,7 +2210,7 @@ private fun StreamsSheet(
                 modifier = Modifier.size(22.dp)
             )
             Text(
-                text = "Switch Stream Quality / Source",
+                text = "Switch Stream Quality / Source (${streams.size})",
                 color = NuvioTextPrimary,
                 fontSize = 18.sp,
                 fontWeight = FontWeight.Bold
@@ -2053,18 +2222,48 @@ private fun StreamsSheet(
         LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
             items(streams) { stream ->
                 val isSelected = stream.url == currentStream?.url
+                var isFocused by remember { mutableStateOf(false) }
+                val scale by animateFloatAsState(
+                    targetValue = if (isFocused) 1.04f else 1f,
+                    animationSpec = spring(dampingRatio = Spring.DampingRatioLowBouncy),
+                    label = "streamFocusScale"
+                )
+
                 Card(
                     shape = RoundedCornerShape(12.dp),
                     colors = CardDefaults.cardColors(
-                        containerColor = if (isSelected) NuvioSurfaceVariant else NuvioBackground
+                        containerColor = when {
+                            isFocused -> NuvioPrimaryBright
+                            isSelected -> NuvioSurfaceVariant
+                            else -> NuvioBackground
+                        }
                     ),
                     modifier = Modifier
                         .fillMaxWidth()
+                        .onFocusChanged { isFocused = it.isFocused }
+                        .graphicsLayer {
+                            scaleX = scale
+                            scaleY = scale
+                        }
                         .border(
-                            1.dp,
-                            if (isSelected) NuvioPrimary else NuvioCardBorder,
-                            RoundedCornerShape(12.dp)
+                            width = if (isFocused) 3.5.dp else 1.dp,
+                            color = if (isFocused) Color.White else if (isSelected) NuvioPrimary else NuvioCardBorder,
+                            shape = RoundedCornerShape(12.dp)
                         )
+                        .onKeyEvent { keyEvent ->
+                            if (keyEvent.type == KeyEventType.KeyDown) {
+                                when (keyEvent.nativeKeyEvent.keyCode) {
+                                    KeyEvent.KEYCODE_DPAD_CENTER,
+                                    KeyEvent.KEYCODE_ENTER,
+                                    KeyEvent.KEYCODE_NUMPAD_ENTER -> {
+                                        onSelect(stream)
+                                        true
+                                    }
+                                    else -> false
+                                }
+                            } else false
+                        }
+                        .focusable()
                         .clickable { onSelect(stream) }
                 ) {
                     Row(
@@ -2081,11 +2280,11 @@ private fun StreamsSheet(
                             ) {
                                 Surface(
                                     shape = RoundedCornerShape(4.dp),
-                                    color = NuvioPrimary
+                                    color = if (isFocused) Color.Black else NuvioPrimary
                                 ) {
                                     Text(
                                         text = stream.displayQuality,
-                                        color = Color.Black,
+                                        color = if (isFocused) Color.White else Color.Black,
                                         fontSize = 11.sp,
                                         fontWeight = FontWeight.ExtraBold,
                                         modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
@@ -2093,11 +2292,11 @@ private fun StreamsSheet(
                                 }
                                 Surface(
                                     shape = RoundedCornerShape(4.dp),
-                                    color = NuvioSurfaceVariant
+                                    color = if (isFocused) Color.Black.copy(alpha = 0.2f) else NuvioSurfaceVariant
                                 ) {
                                     Text(
                                         text = stream.displayVideoCodec,
-                                        color = NuvioTextPrimary,
+                                        color = if (isFocused) Color.Black else NuvioTextPrimary,
                                         fontSize = 10.sp,
                                         fontWeight = FontWeight.Medium,
                                         modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
@@ -2107,11 +2306,11 @@ private fun StreamsSheet(
                                 if (!isHwSupported) {
                                     Surface(
                                         shape = RoundedCornerShape(4.dp),
-                                        color = Color(0xFFD32F2F).copy(alpha = 0.2f)
+                                        color = Color(0xFFD32F2F).copy(alpha = if (isFocused) 0.8f else 0.2f)
                                     ) {
                                         Text(
                                             text = "⚠️ No HW Dec",
-                                            color = Color(0xFFFF8A80),
+                                            color = if (isFocused) Color.White else Color(0xFFFF8A80),
                                             fontSize = 10.sp,
                                             fontWeight = FontWeight.Bold,
                                             modifier = Modifier.padding(horizontal = 5.dp, vertical = 2.dp)
@@ -2120,11 +2319,11 @@ private fun StreamsSheet(
                                 } else {
                                     Surface(
                                         shape = RoundedCornerShape(4.dp),
-                                        color = NuvioSuccess.copy(alpha = 0.15f)
+                                        color = if (isFocused) Color(0xFF2E7D32) else NuvioSuccess.copy(alpha = 0.15f)
                                     ) {
                                         Text(
                                             text = "✓ Compatible",
-                                            color = NuvioSuccess,
+                                            color = if (isFocused) Color.White else NuvioSuccess,
                                             fontSize = 10.sp,
                                             fontWeight = FontWeight.SemiBold,
                                             modifier = Modifier.padding(horizontal = 5.dp, vertical = 2.dp)
@@ -2134,11 +2333,11 @@ private fun StreamsSheet(
                                 if (stream.formattedSize.isNotBlank()) {
                                     Surface(
                                         shape = RoundedCornerShape(4.dp),
-                                        color = NuvioSurfaceVariant
+                                        color = if (isFocused) Color.Black.copy(alpha = 0.2f) else NuvioSurfaceVariant
                                     ) {
                                         Text(
                                             text = stream.formattedSize,
-                                            color = NuvioTextSecondary,
+                                            color = if (isFocused) Color.Black else NuvioTextSecondary,
                                             fontSize = 10.sp,
                                             modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
                                         )
@@ -2148,7 +2347,7 @@ private fun StreamsSheet(
                             Spacer(modifier = Modifier.height(6.dp))
                             Text(
                                 text = stream.displayFileName,
-                                color = NuvioTextPrimary,
+                                color = if (isFocused) Color.Black else NuvioTextPrimary,
                                 fontSize = 12.sp,
                                 maxLines = 1,
                                 overflow = TextOverflow.Ellipsis
@@ -2159,7 +2358,7 @@ private fun StreamsSheet(
                             Icon(
                                 imageVector = Icons.Default.Check,
                                 contentDescription = "Active",
-                                tint = NuvioPrimary,
+                                tint = if (isFocused) Color.Black else NuvioPrimary,
                                 modifier = Modifier.size(22.dp)
                             )
                         }

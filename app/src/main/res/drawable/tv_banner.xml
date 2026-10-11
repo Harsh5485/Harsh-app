@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="320dp"
+    android:height="180dp"
+    android:viewportWidth="320"
+    android:viewportHeight="180">
+    <!-- Background Gradient / Fill -->
+    <path
+        android:fillColor="#0F172A"
+        android:pathData="M0,0h320v180h-320z" />
+    
+    <!-- Accent Decorative Card -->
+    <path
+        android:fillColor="#1E293B"
+        android:pathData="M16,16h288v148h-288z" />
+
+    <path
+        android:fillColor="#38BDF8"
+        android:pathData="M30,30h10v120h-10z" />
+
+    <!-- Play Icon Circle -->
+    <path
+        android:fillColor="#38BDF8"
+        android:pathData="M110,90m-24,0a24,24 0 1,0 48,0a24,24 0 1,0 -48,0" />
+
+    <!-- Play Triangle -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M103,78l18,12l-18,12z" />
+
+    <!-- Text Placeholder Vector Path or Banner Accent -->
+    <path
+        android:fillColor="#818CF8"
+        android:pathData="M150,70h120v12h-120z" />
+
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M150,90h90v10h-90z" />
+
+    <path
+        android:fillColor="#94A3B8"
+        android:pathData="M150,108h70v8h-70z" />
+</vector>

@@ -37,6 +37,17 @@ import androidx.compose.material.icons.filled.Speed
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
+import androidx.compose.foundation.focusable
+import androidx.compose.ui.focus.onFocusChanged
+import androidx.compose.ui.input.key.onKeyEvent
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.type
+import android.view.KeyEvent
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.spring
+import androidx.compose.animation.core.Spring
+import androidx.compose.ui.graphics.graphicsLayer
+import com.example.ui.theme.NuvioPrimaryBright
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -350,13 +361,44 @@ fun DownloadCardItem(
     val thumbWidth = (screenWidth * 0.18f).coerceIn(60.dp, 80.dp)
     val thumbHeight = thumbWidth * 1.3f
 
+    var isCardFocused by remember { mutableStateOf(false) }
+    val scale by animateFloatAsState(
+        targetValue = if (isCardFocused) 1.02f else 1f,
+        animationSpec = spring(dampingRatio = Spring.DampingRatioLowBouncy),
+        label = "dlScale"
+    )
+
     Card(
         shape = RoundedCornerShape(12.dp),
-        colors = CardDefaults.cardColors(containerColor = NuvioCard),
+        colors = CardDefaults.cardColors(containerColor = if (isCardFocused) NuvioPrimaryBright else NuvioCard),
         modifier = modifier
             .fillMaxWidth()
             .padding(horizontal = 16.dp, vertical = 6.dp)
-            .border(1.dp, NuvioCardBorder, RoundedCornerShape(12.dp))
+            .onFocusChanged { isCardFocused = it.isFocused }
+            .graphicsLayer {
+                scaleX = scale
+                scaleY = scale
+            }
+            .border(
+                width = if (isCardFocused) 3.5.dp else 1.dp,
+                color = if (isCardFocused) Color.White else NuvioCardBorder,
+                shape = RoundedCornerShape(12.dp)
+            )
+            .onKeyEvent { keyEvent ->
+                if (keyEvent.type == KeyEventType.KeyDown) {
+                    when (keyEvent.nativeKeyEvent.keyCode) {
+                        KeyEvent.KEYCODE_DPAD_CENTER,
+                        KeyEvent.KEYCODE_ENTER,
+                        KeyEvent.KEYCODE_NUMPAD_ENTER -> {
+                            onPlay()
+                            true
+                        }
+                        else -> false
+                    }
+                } else false
+            }
+            .focusable()
+            .clickable(onClick = onPlay)
             .testTag("download_card_${task.downloadId}")
     ) {
         Column(modifier = Modifier.padding(12.dp)) {

@@ -46,6 +46,17 @@ import androidx.compose.material3.TabRowDefaults
 import androidx.compose.material3.TabRowDefaults.tabIndicatorOffset
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.foundation.focusable
+import androidx.compose.ui.focus.onFocusChanged
+import androidx.compose.ui.input.key.onKeyEvent
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.type
+import android.view.KeyEvent
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.spring
+import androidx.compose.animation.core.Spring
+import androidx.compose.ui.graphics.graphicsLayer
+import com.example.ui.theme.NuvioPrimaryBright
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -123,14 +134,38 @@ fun LibraryScreen(
             }
 
             if (selectedTab == 2 && watchHistory.isNotEmpty()) {
+                var isClearFocused by remember { mutableStateOf(false) }
                 IconButton(
                     onClick = { showClearHistoryDialog = true },
-                    modifier = Modifier.testTag("clear_history_button")
+                    modifier = Modifier
+                        .size(36.dp)
+                        .onFocusChanged { isClearFocused = it.isFocused }
+                        .background(if (isClearFocused) NuvioPrimaryBright else Color.Transparent, CircleShape)
+                        .border(
+                            width = if (isClearFocused) 2.5.dp else 0.dp,
+                            color = if (isClearFocused) Color.White else Color.Transparent,
+                            shape = CircleShape
+                        )
+                        .onKeyEvent { keyEvent ->
+                            if (keyEvent.type == KeyEventType.KeyDown) {
+                                when (keyEvent.nativeKeyEvent.keyCode) {
+                                    KeyEvent.KEYCODE_DPAD_CENTER,
+                                    KeyEvent.KEYCODE_ENTER,
+                                    KeyEvent.KEYCODE_NUMPAD_ENTER -> {
+                                        showClearHistoryDialog = true
+                                        true
+                                    }
+                                    else -> false
+                                }
+                            } else false
+                        }
+                        .focusable()
+                        .testTag("clear_history_button")
                 ) {
                     Icon(
                         imageVector = Icons.Default.DeleteSweep,
                         contentDescription = "Clear History",
-                        tint = NuvioError
+                        tint = if (isClearFocused) Color.Black else NuvioError
                     )
                 }
             }
@@ -152,15 +187,41 @@ fun LibraryScreen(
             modifier = Modifier.padding(horizontal = 14.dp)
         ) {
             tabs.forEachIndexed { index, title ->
+                var isTabFocused by remember { mutableStateOf(false) }
                 Tab(
                     selected = selectedTab == index,
                     onClick = { selectedTab = index },
+                    modifier = Modifier
+                        .onFocusChanged { isTabFocused = it.isFocused }
+                        .background(
+                            if (isTabFocused) NuvioPrimaryBright else Color.Transparent,
+                            RoundedCornerShape(8.dp)
+                        )
+                        .border(
+                            width = if (isTabFocused) 2.5.dp else 0.dp,
+                            color = if (isTabFocused) Color.White else Color.Transparent,
+                            shape = RoundedCornerShape(8.dp)
+                        )
+                        .onKeyEvent { keyEvent ->
+                            if (keyEvent.type == KeyEventType.KeyDown) {
+                                when (keyEvent.nativeKeyEvent.keyCode) {
+                                    KeyEvent.KEYCODE_DPAD_CENTER,
+                                    KeyEvent.KEYCODE_ENTER,
+                                    KeyEvent.KEYCODE_NUMPAD_ENTER -> {
+                                        selectedTab = index
+                                        true
+                                    }
+                                    else -> false
+                                }
+                            } else false
+                        }
+                        .focusable(),
                     text = {
                         Text(
                             text = title,
                             fontSize = 13.sp,
-                            fontWeight = if (selectedTab == index) FontWeight.Bold else FontWeight.Medium,
-                            color = if (selectedTab == index) NuvioPrimary else NuvioTextSecondary
+                            fontWeight = if (isTabFocused || selectedTab == index) FontWeight.Bold else FontWeight.Medium,
+                            color = if (isTabFocused) Color.Black else if (selectedTab == index) NuvioPrimary else NuvioTextSecondary
                         )
                     }
                 )
@@ -288,12 +349,42 @@ fun HistoryItemCard(
     onDelete: () -> Unit,
     modifier: Modifier = Modifier
 ) {
+    var isFocused by remember { mutableStateOf(false) }
+    val scale by animateFloatAsState(
+        targetValue = if (isFocused) 1.03f else 1f,
+        animationSpec = spring(dampingRatio = Spring.DampingRatioLowBouncy),
+        label = "historyScale"
+    )
+
     Card(
         shape = RoundedCornerShape(12.dp),
-        colors = CardDefaults.cardColors(containerColor = NuvioCard),
+        colors = CardDefaults.cardColors(containerColor = if (isFocused) NuvioPrimaryBright else NuvioCard),
         modifier = modifier
             .fillMaxWidth()
-            .border(1.dp, NuvioCardBorder, RoundedCornerShape(12.dp))
+            .onFocusChanged { isFocused = it.isFocused }
+            .graphicsLayer {
+                scaleX = scale
+                scaleY = scale
+            }
+            .border(
+                width = if (isFocused) 3.5.dp else 1.dp,
+                color = if (isFocused) Color.White else NuvioCardBorder,
+                shape = RoundedCornerShape(12.dp)
+            )
+            .onKeyEvent { keyEvent ->
+                if (keyEvent.type == KeyEventType.KeyDown) {
+                    when (keyEvent.nativeKeyEvent.keyCode) {
+                        KeyEvent.KEYCODE_DPAD_CENTER,
+                        KeyEvent.KEYCODE_ENTER,
+                        KeyEvent.KEYCODE_NUMPAD_ENTER -> {
+                            onResume()
+                            true
+                        }
+                        else -> false
+                    }
+                } else false
+            }
+            .focusable()
             .clickable(onClick = onResume)
     ) {
         Row(

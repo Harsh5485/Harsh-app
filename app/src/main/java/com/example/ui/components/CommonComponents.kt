@@ -64,7 +64,17 @@ import androidx.compose.material3.IconButton
 import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.spring
 import androidx.compose.foundation.interaction.collectIsPressedAsState
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.foundation.focusable
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.focus.onFocusChanged
+import androidx.compose.ui.zIndex
+import androidx.compose.ui.input.key.onKeyEvent
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.type
+import android.view.KeyEvent
 import androidx.compose.ui.graphics.graphicsLayer
 import coil.compose.AsyncImage
 import com.example.data.local.WatchHistoryEntity
@@ -103,12 +113,13 @@ fun MediaPosterCard(
 ) {
     val configuration = androidx.compose.ui.platform.LocalConfiguration.current
     val isSmallScreen = configuration.screenWidthDp < 360
-    val cardWidth = if (isSmallScreen) 105.dp else 125.dp
+    val cardWidth = if (isSmallScreen) 115.dp else 140.dp
     
+    var isFocused by remember { mutableStateOf(false) }
     val interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() }
     val isPressed by interactionSource.collectIsPressedAsState()
-    val scale by androidx.compose.animation.core.animateFloatAsState(
-        targetValue = if (isPressed) 0.98f else 1f,
+    val scale by animateFloatAsState(
+        targetValue = if (isFocused) 1.08f else if (isPressed) 0.98f else 1f,
         animationSpec = spring(dampingRatio = Spring.DampingRatioLowBouncy, stiffness = Spring.StiffnessLow),
         label = "scale"
     )
@@ -117,18 +128,32 @@ fun MediaPosterCard(
         modifier = modifier
             .width(cardWidth)
             .aspectRatio(2f / 3.1f)
+            .zIndex(if (isFocused) 10f else 1f)
+            .onFocusChanged { isFocused = it.isFocused }
             .graphicsLayer {
                 scaleX = scale
                 scaleY = scale
             }
-            .clip(RoundedCornerShape(8.dp))
+            .clip(RoundedCornerShape(10.dp))
             .border(
-                width = 0.5.dp,
-                brush = Brush.verticalGradient(
-                    colors = listOf(NuvioCardBorder.copy(alpha = 0.4f), Color.Transparent, NuvioCardBorder.copy(alpha = 0.15f))
-                ),
-                shape = RoundedCornerShape(8.dp)
+                width = if (isFocused) 3.dp else 0.5.dp,
+                color = if (isFocused) NuvioPrimaryBright else NuvioCardBorder.copy(alpha = 0.4f),
+                shape = RoundedCornerShape(10.dp)
             )
+            .onKeyEvent { keyEvent ->
+                if (keyEvent.type == KeyEventType.KeyDown) {
+                    when (keyEvent.nativeKeyEvent.keyCode) {
+                        KeyEvent.KEYCODE_DPAD_CENTER,
+                        KeyEvent.KEYCODE_ENTER,
+                        KeyEvent.KEYCODE_NUMPAD_ENTER -> {
+                            onClick()
+                            true
+                        }
+                        else -> false
+                    }
+                } else false
+            }
+            .focusable()
             .clickable(
                 interactionSource = interactionSource,
                 indication = androidx.compose.foundation.LocalIndication.current,
@@ -137,8 +162,9 @@ fun MediaPosterCard(
             .testTag("media_card_${item.id}"),
         shape = RoundedCornerShape(10.dp),
         colors = CardDefaults.cardColors(containerColor = NuvioCard),
-        elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
+        elevation = CardDefaults.cardElevation(defaultElevation = if (isFocused) 8.dp else 2.dp)
     ) {
+
         Box(modifier = Modifier.fillMaxSize()) {
             // Placeholder
             Box(
@@ -150,6 +176,7 @@ fun MediaPosterCard(
             AsyncImage(
                 model = coil.request.ImageRequest.Builder(androidx.compose.ui.platform.LocalContext.current)
                     .data(item.poster ?: item.background)
+                    .size(coil.size.Size(280, 420))
                     .crossfade(true)
                     .build(),
                 contentDescription = item.name,
@@ -338,25 +365,52 @@ fun HeroBanner(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(16.dp)
             ) {
+                var isPlayFocused by remember { mutableStateOf(false) }
                 Button(
                     onClick = onPlayClick,
                     shape = RoundedCornerShape(12.dp),
-                    colors = ButtonDefaults.buttonColors(containerColor = Color.White, contentColor = Color.Black),
-                    modifier = Modifier.weight(1f).height(48.dp)
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = if (isPlayFocused) NuvioPrimaryBright else Color.White,
+                        contentColor = Color.Black
+                    ),
+                    modifier = Modifier
+                        .weight(1f)
+                        .height(48.dp)
+                        .onFocusChanged { isPlayFocused = it.isFocused }
+                        .border(
+                            width = if (isPlayFocused) 3.dp else 0.dp,
+                            color = if (isPlayFocused) Color.White else Color.Transparent,
+                            shape = RoundedCornerShape(12.dp)
+                        )
+                        .focusable()
                 ) {
                     Icon(Icons.Default.PlayArrow, null, modifier = Modifier.size(20.dp))
                     Spacer(Modifier.width(6.dp))
                     Text("Watch Now", fontWeight = FontWeight.ExtraBold, fontSize = 14.sp)
                 }
 
+                var isDetailFocused by remember { mutableStateOf(false) }
                 IconButton(
                     onClick = onDetailClick,
                     modifier = Modifier
                         .size(48.dp)
-                        .background(Color.White.copy(alpha = 0.2f), RoundedCornerShape(12.dp))
-                        .border(1.dp, Color.White.copy(alpha = 0.3f), RoundedCornerShape(12.dp))
+                        .onFocusChanged { isDetailFocused = it.isFocused }
+                        .background(
+                            if (isDetailFocused) NuvioPrimary else Color.White.copy(alpha = 0.2f),
+                            RoundedCornerShape(12.dp)
+                        )
+                        .border(
+                            width = if (isDetailFocused) 3.dp else 1.dp,
+                            color = if (isDetailFocused) Color.White else Color.White.copy(alpha = 0.3f),
+                            shape = RoundedCornerShape(12.dp)
+                        )
+                        .focusable()
                 ) {
-                    Icon(Icons.AutoMirrored.Filled.ArrowForward, null, tint = Color.White)
+                    Icon(
+                        Icons.AutoMirrored.Filled.ArrowForward,
+                        null,
+                        tint = if (isDetailFocused) Color.Black else Color.White
+                    )
                 }
             }
         }
@@ -371,18 +425,50 @@ fun ContinueWatchingCard(
 ) {
     val configuration = androidx.compose.ui.platform.LocalConfiguration.current
     val screenWidth = configuration.screenWidthDp.dp
-    val cardWidth = (screenWidth * 0.5f).coerceIn(160.dp, 220.dp)
+    val cardWidth = (screenWidth * 0.45f).coerceIn(180.dp, 240.dp)
     val thumbHeight = cardWidth * 0.56f
+
+    var isFocused by remember { mutableStateOf(false) }
+    val scale by animateFloatAsState(
+        targetValue = if (isFocused) 1.06f else 1f,
+        animationSpec = spring(dampingRatio = Spring.DampingRatioLowBouncy),
+        label = "cwScale"
+    )
 
     Card(
         modifier = modifier
             .width(cardWidth)
+            .zIndex(if (isFocused) 10f else 1f)
+            .onFocusChanged { isFocused = it.isFocused }
+            .graphicsLayer {
+                scaleX = scale
+                scaleY = scale
+            }
             .clip(RoundedCornerShape(12.dp))
-            .border(1.dp, NuvioCardBorder, RoundedCornerShape(12.dp))
+            .border(
+                width = if (isFocused) 3.dp else 1.dp,
+                color = if (isFocused) NuvioPrimaryBright else NuvioCardBorder,
+                shape = RoundedCornerShape(12.dp)
+            )
+            .onKeyEvent { keyEvent ->
+                if (keyEvent.type == KeyEventType.KeyDown) {
+                    when (keyEvent.nativeKeyEvent.keyCode) {
+                        KeyEvent.KEYCODE_DPAD_CENTER,
+                        KeyEvent.KEYCODE_ENTER,
+                        KeyEvent.KEYCODE_NUMPAD_ENTER -> {
+                            onClick()
+                            true
+                        }
+                        else -> false
+                    }
+                } else false
+            }
+            .focusable()
             .clickable(onClick = onClick)
             .testTag("continue_card_${item.id}"),
         shape = RoundedCornerShape(12.dp),
-        colors = CardDefaults.cardColors(containerColor = NuvioCard)
+        colors = CardDefaults.cardColors(containerColor = NuvioCard),
+        elevation = CardDefaults.cardElevation(defaultElevation = if (isFocused) 8.dp else 2.dp)
     ) {
         Column {
             Box(
@@ -391,7 +477,11 @@ fun ContinueWatchingCard(
                     .height(thumbHeight)
             ) {
                 AsyncImage(
-                    model = item.backdrop ?: item.poster,
+                    model = coil.request.ImageRequest.Builder(androidx.compose.ui.platform.LocalContext.current)
+                        .data(item.backdrop ?: item.poster)
+                        .size(coil.size.Size(360, 200))
+                        .crossfade(true)
+                        .build(),
                     contentDescription = item.title,
                     contentScale = ContentScale.Crop,
                     modifier = Modifier.fillMaxSize()
@@ -523,22 +613,39 @@ fun ServerStatusBadge(
         label = "pulseAlpha"
     )
 
+    var isBadgeFocused by remember { mutableStateOf(false) }
+
     Surface(
         modifier = modifier
+            .onFocusChanged { isBadgeFocused = it.isFocused }
             .clip(RoundedCornerShape(20.dp))
-            .clickable(onClick = onClick)
             .border(
-                1.dp,
-                if (isConnected) NuvioSuccess.copy(alpha = 0.5f) else NuvioPrimary.copy(alpha = 0.5f),
-                RoundedCornerShape(20.dp)
+                width = if (isBadgeFocused) 3.dp else 1.dp,
+                color = if (isBadgeFocused) Color.White else if (isConnected) NuvioSuccess.copy(alpha = 0.5f) else NuvioPrimary.copy(alpha = 0.5f),
+                shape = RoundedCornerShape(20.dp)
             )
+            .onKeyEvent { keyEvent ->
+                if (keyEvent.type == KeyEventType.KeyDown) {
+                    when (keyEvent.nativeKeyEvent.keyCode) {
+                        KeyEvent.KEYCODE_DPAD_CENTER,
+                        KeyEvent.KEYCODE_ENTER,
+                        KeyEvent.KEYCODE_NUMPAD_ENTER -> {
+                            onClick()
+                            true
+                        }
+                        else -> false
+                    }
+                } else false
+            }
+            .focusable()
+            .clickable(onClick = onClick)
             .testTag("server_status_badge"),
         shape = RoundedCornerShape(20.dp),
-        color = NuvioSurfaceVariant
+        color = if (isBadgeFocused) NuvioPrimaryBright else NuvioSurfaceVariant
     ) {
         Row(
             verticalAlignment = Alignment.CenterVertically,
-            modifier = Modifier.padding(horizontal = 7.dp, vertical = 3.dp)
+            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
         ) {
             Box(
                 modifier = Modifier
@@ -551,9 +658,9 @@ fun ServerStatusBadge(
             Spacer(modifier = Modifier.width(4.dp))
             Text(
                 text = if (isConnected) "Server: $tokenName" else "Connecting...",
-                color = NuvioTextPrimary,
-                fontSize = 9.sp,
-                fontWeight = FontWeight.SemiBold
+                color = if (isBadgeFocused) Color.Black else NuvioTextPrimary,
+                fontSize = 10.sp,
+                fontWeight = FontWeight.Bold
             )
         }
     }

@@ -1,6 +1,6 @@
 {
-  "name": "Harsh",
-  "description": "Stream movies and series with fast streaming and Telegram-Stremio integration.",
+  "name": "Harsh TV",
+  "description": "Stream movies and series with fast streaming and Telegram-Stremio integration on Android TV.",
   "requestFramePermissions": [],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }

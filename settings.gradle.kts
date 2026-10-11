@@ -22,6 +22,6 @@ dependencyResolutionManagement {
   }
 }
 
-rootProject.name = "Harsh"
+rootProject.name = "Harsh TV"
 
 include(":app")

@@ -51,6 +51,13 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.foundation.focusable
+import androidx.compose.ui.focus.onFocusChanged
+import androidx.compose.ui.input.key.onKeyEvent
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.type
+import android.view.KeyEvent
+import com.example.ui.theme.NuvioPrimaryBright
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
@@ -184,21 +191,41 @@ fun ServerSettingsScreen(
             verticalAlignment = Alignment.CenterVertically
         ) {
             Row(verticalAlignment = Alignment.CenterVertically) {
+                var isBackFocused by remember { mutableStateOf(false) }
                 IconButton(
                     onClick = onBackClick,
                     modifier = Modifier
                         .size(42.dp)
+                        .onFocusChanged { isBackFocused = it.isFocused }
                         .background(
-                            brush = Brush.verticalGradient(listOf(Harsh3DCardGradientTop, Harsh3DCardGradientBottom)),
+                            if (isBackFocused) NuvioPrimaryBright else Color.Black.copy(alpha = 0.5f),
                             shape = CircleShape
                         )
-                        .border(1.dp, NuvioCardBorder, CircleShape)
+                        .border(
+                            width = if (isBackFocused) 3.dp else 1.dp,
+                            color = if (isBackFocused) Color.White else NuvioCardBorder,
+                            shape = CircleShape
+                        )
+                        .onKeyEvent { keyEvent ->
+                            if (keyEvent.type == KeyEventType.KeyDown) {
+                                when (keyEvent.nativeKeyEvent.keyCode) {
+                                    KeyEvent.KEYCODE_DPAD_CENTER,
+                                    KeyEvent.KEYCODE_ENTER,
+                                    KeyEvent.KEYCODE_NUMPAD_ENTER -> {
+                                        onBackClick()
+                                        true
+                                    }
+                                    else -> false
+                                }
+                            } else false
+                        }
+                        .focusable()
                         .testTag("settings_back_button")
                 ) {
                     Icon(
                         imageVector = Icons.AutoMirrored.Filled.ArrowBack,
                         contentDescription = "Back",
-                        tint = NuvioPrimary
+                        tint = if (isBackFocused) Color.Black else NuvioPrimary
                     )
                 }
 
