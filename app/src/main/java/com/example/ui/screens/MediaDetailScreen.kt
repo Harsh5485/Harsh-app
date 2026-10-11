@@ -103,6 +103,18 @@ fun MediaDetailScreen(
 
     var selectedEpisode by remember { mutableStateOf<VideoEpisode?>(null) }
 
+    // Auto-refresh logic for streams
+    androidx.compose.runtime.LaunchedEffect(mediaItem.id, detailState.selectedEpisode?.id) {
+        while (true) {
+            kotlinx.coroutines.delay(25000) // Poll every 25 seconds
+            val targetId = if (isSeries && detailState.selectedEpisode != null) 
+                detailState.selectedEpisode!!.id 
+            else 
+                mediaItem.id
+            viewModel.loadStreams(mediaItem.type, targetId, silent = true)
+        }
+    }
+
     Box(
         modifier = modifier
             .fillMaxSize()
@@ -651,32 +663,34 @@ fun MediaDetailScreen(
                             )
                         }
 
-                        if (detailState.isLoadingStreams) {
-                            CircularProgressIndicator(
-                                color = NuvioPrimary,
-                                modifier = Modifier.size(20.dp),
-                                strokeWidth = 2.dp
-                            )
-                        } else {
-                            IconButton(
-                                onClick = {
-                                    val targetId = if (isSeries && selectedEpisode != null) selectedEpisode!!.id else mediaItem.id
-                                    viewModel.loadStreams(mediaItem.type, targetId)
-                                }
-                            ) {
-                                Icon(
-                                    imageVector = Icons.Default.Refresh,
-                                    contentDescription = "Refresh Streams",
-                                    tint = NuvioTextSecondary,
-                                    modifier = Modifier.size(18.dp)
-                                )
-                            }
-                        }
+                        // No manual refresh button as per request, auto-refresh is active
                     }
 
                     Spacer(modifier = Modifier.height(10.dp))
 
-                    if (detailState.streamErrorMessage != null) {
+                    if (detailState.isLoadingStreams && detailState.streams.isEmpty()) {
+                        // Custom Loading Animation
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(vertical = 40.dp),
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.Center
+                        ) {
+                            CircularProgressIndicator(
+                                color = NuvioPrimary,
+                                modifier = Modifier.size(36.dp),
+                                strokeWidth = 3.dp
+                            )
+                            Spacer(modifier = Modifier.height(12.dp))
+                            Text(
+                                text = "Loading Streams...",
+                                color = NuvioTextSecondary,
+                                fontSize = 14.sp,
+                                fontWeight = FontWeight.Medium
+                            )
+                        }
+                    } else if (detailState.streamErrorMessage != null && detailState.streams.isEmpty()) {
                         Surface(
                             shape = RoundedCornerShape(10.dp),
                             color = NuvioSurfaceVariant,

@@ -331,9 +331,11 @@ class NuvioViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    fun loadStreams(type: String, id: String) {
+    fun loadStreams(type: String, id: String, silent: Boolean = false) {
         viewModelScope.launch {
-            _detailState.update { it.copy(isLoadingStreams = true, streamErrorMessage = null) }
+            if (!silent) {
+                _detailState.update { it.copy(isLoadingStreams = true, streamErrorMessage = null) }
+            }
             val result = repository.getStreams(id, type)
             result.onSuccess { list ->
                 val isOnlyCombined = if (type.equals("series", ignoreCase = true) && list.isNotEmpty()) {
