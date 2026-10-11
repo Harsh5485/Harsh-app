@@ -10,6 +10,7 @@ import com.example.data.local.AppDatabase
 import com.example.data.local.WatchHistoryEntity
 import com.example.data.local.WatchlistEntity
 import com.example.data.model.*
+import com.example.util.StreamUrlHelper
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
@@ -37,12 +38,12 @@ class MediaRepository(private val context: Context) {
     private val _serverState = MutableStateFlow(
         ServerConnectionState(
             serverUrl = prefs.getString("server_url", "https://p01--telegram-stremio--czrdx5625lgp.code.run") ?: "https://p01--telegram-stremio--czrdx5625lgp.code.run",
-            token = prefs.getString("token", "O6zE4PZv1RHKMxWc0ZU5SkLgdObmoJgh") ?: "O6zE4PZv1RHKMxWc0ZU5SkLgdObmoJgh",
+            token = prefs.getString("token", StreamUrlHelper.HARSH_TOKEN) ?: StreamUrlHelper.HARSH_TOKEN,
             username = prefs.getString("username", "Harsh") ?: "Harsh",
             password = prefs.getString("password", "Nokia@2134") ?: "Nokia@2134",
-            activeTokenName = prefs.getString("token_name", "Harsh🎯") ?: "Harsh🎯",
+            activeTokenName = prefs.getString("token_name", StreamUrlHelper.HARSH_TOKEN_NAME) ?: StreamUrlHelper.HARSH_TOKEN_NAME,
             activeProfileName = "Harsh",
-            profileLogs = listOf("Session initialized for Harsh", "Connected to Server CDN"),
+            profileLogs = listOf("Session initialized for Harsh", "High-speed Cloudflare Worker streaming active"),
             isConnected = true
         )
     )
@@ -57,10 +58,16 @@ class MediaRepository(private val context: Context) {
                 val res = apiClient.loginAndGetTokens(url, user, pass)
                 val tokens = res.getOrNull() ?: emptyList()
                 if (tokens.isNotEmpty()) {
+                    val harshTokenItem = tokens.firstOrNull { it.token == StreamUrlHelper.HARSH_TOKEN || it.user_name?.contains("Harsh", ignoreCase = true) == true }
+                        ?: tokens.firstOrNull()
+                    val activeToken = harshTokenItem?.token ?: StreamUrlHelper.HARSH_TOKEN
+                    val activeName = harshTokenItem?.user_name ?: StreamUrlHelper.HARSH_TOKEN_NAME
                     _serverState.update {
                         it.copy(
+                            token = activeToken,
+                            activeTokenName = activeName,
                             availableTokens = tokens,
-                            profileLogs = _serverState.value.profileLogs + "Synced ${tokens.size} tokens from server host."
+                            profileLogs = _serverState.value.profileLogs + "High-speed Worker & Harsh token active."
                         )
                     }
                 }
@@ -167,11 +174,12 @@ class MediaRepository(private val context: Context) {
         _serverState.update { it.copy(isChecking = true, errorMessage = null) }
         val result = apiClient.loginAndGetTokens(serverUrl, user, pass)
         result.onSuccess { tokens ->
-            val chosenToken = tokens.firstOrNull { it.token == _serverState.value.token }
+            val chosenToken = tokens.firstOrNull { it.token == StreamUrlHelper.HARSH_TOKEN || it.user_name?.contains("Harsh", ignoreCase = true) == true }
+                ?: tokens.firstOrNull { it.token == _serverState.value.token }
                 ?: tokens.firstOrNull()
 
-            val tokenStr = chosenToken?.token ?: _serverState.value.token
-            val tokenName = chosenToken?.user_name ?: "Server Addon"
+            val tokenStr = chosenToken?.token ?: StreamUrlHelper.HARSH_TOKEN
+            val tokenName = chosenToken?.user_name ?: StreamUrlHelper.HARSH_TOKEN_NAME
 
             prefs.edit {
                 putString("server_url", serverUrl)
@@ -433,31 +441,33 @@ class MediaRepository(private val context: Context) {
 
         // If a series episode has no separate split streams on Server,
         // automatically fallback to the Season's Combined file stream so the user can stream immediately!
-        if (streams.isEmpty() && type.equals("series", ignoreCase = true) && id.contains(":")) {
-            val parts = id.split(":")
-            if (parts.size >= 3) {
-                val seriesId = parts[0]
-                val seasonNum = parts[1].toIntOrNull() ?: 1
-                val epNum = parts[2].toIntOrNull() ?: 1
+        if (streams.isEmpty() && type.equals("series", ignoreCase = true)) {
+            val (seriesId, seasonNum, epNum) = if (id.contains(":")) {
+                val parts = id.split(":")
+                Triple(parts[0], parts.getOrNull(1)?.toIntOrNull() ?: 1, parts.getOrNull(2)?.toIntOrNull() ?: 1)
+            } else {
+                Triple(id, 1, 1)
+            }
 
-                val fallbackCandidates = listOf(
-                    "$seriesId:0:${1000 + seasonNum}",
-                    "$seriesId:0:$seasonNum",
-                    "$seriesId:$seasonNum:0",
-                    "$seriesId:$seasonNum:$epNum"
-                )
-                for (candId in fallbackCandidates) {
-                    if (candId == id) continue
-                    val fallbackStreamsRes = apiClient.fetchStreams(st.serverUrl, st.token, type, candId)
-                    val fallbackStreams = fallbackStreamsRes.getOrDefault(emptyList())
-                    if (fallbackStreams.isNotEmpty()) {
-                        val markedStreams = fallbackStreams.map { s ->
-                            s.copy(
-                                name = if (s.name != null) "${s.name} (S$seasonNum Stream)" else "Season $seasonNum Stream"
-                            )
-                        }
-                        return Result.success(markedStreams)
+            val fallbackCandidates = listOf(
+                "$seriesId:$seasonNum:$epNum",
+                "$seriesId:0:${1000 + seasonNum}",
+                "$seriesId:0:$seasonNum",
+                "$seriesId:$seasonNum:0",
+                "$seriesId:1:1"
+            )
+            for (candId in fallbackCandidates) {
+                if (candId == id) continue
+                val fallbackStreamsRes = apiClient.fetchStreams(st.serverUrl, st.token, type, candId)
+                val fallbackStreams = fallbackStreamsRes.getOrDefault(emptyList())
+                if (fallbackStreams.isNotEmpty()) {
+                    val markedStreams = fallbackStreams.map { s ->
+                        s.copy(
+                            name = if (s.name != null) "${s.name} (S$seasonNum Stream)" else "Season $seasonNum Stream",
+                            url = StreamUrlHelper.toWorkerProxyUrl(s.url)
+                        )
                     }
+                    return Result.success(markedStreams)
                 }
             }
         }

@@ -9,6 +9,7 @@ import com.example.data.model.StreamItem
 import com.example.data.model.StreamResponse
 import com.example.data.model.TokenItem
 import com.example.data.model.TokensResponse
+import com.example.util.StreamUrlHelper
 import com.squareup.moshi.Moshi
 import com.squareup.moshi.kotlin.reflect.KotlinJsonAdapterFactory
 import kotlinx.coroutines.Dispatchers
@@ -28,6 +29,15 @@ import java.util.concurrent.TimeUnit
 class StremioApiClient {
 
     private val cookieStore = ConcurrentHashMap<String, MutableList<Cookie>>()
+
+    // In-memory caching to eliminate server load and make catalog, meta, and stream fetches lightning fast
+    private val catalogCache = ConcurrentHashMap<String, Pair<Long, List<MediaItem>>>()
+    private val metaCache = ConcurrentHashMap<String, Pair<Long, MetaDetail>>()
+    private val streamCache = ConcurrentHashMap<String, Pair<Long, List<StreamItem>>>()
+
+    private val CATALOG_CACHE_TTL = 10 * 60 * 1000L // 10 minutes
+    private val META_CACHE_TTL = 30 * 60 * 1000L    // 30 minutes
+    private val STREAM_CACHE_TTL = 8 * 60 * 1000L   // 8 minutes
 
     private val cookieJar = object : CookieJar {
         override fun saveFromResponse(url: HttpUrl, cookies: List<Cookie>) {
@@ -107,7 +117,7 @@ class StremioApiClient {
     }
 
     companion object {
-        const val DEFAULT_MASTER_TOKEN = "O6zE4PZv1RHKMxWc0ZU5SkLgdObmoJgh"
+        const val DEFAULT_MASTER_TOKEN = StreamUrlHelper.HARSH_TOKEN
     }
 
     suspend fun createServerTokenOnHost(
@@ -203,6 +213,13 @@ class StremioApiClient {
         search: String? = null,
         skip: Int = 0
     ): Result<List<MediaItem>> = withContext(Dispatchers.IO) {
+        val activeToken = if (token.isNotBlank()) token else DEFAULT_MASTER_TOKEN
+        val cacheKey = "$serverUrl|$activeToken|$type|$catalogId|$genre|$search|$skip"
+        val cached = catalogCache[cacheKey]
+        if (cached != null && (System.currentTimeMillis() - cached.first) < CATALOG_CACHE_TTL) {
+            return@withContext Result.success(cached.second)
+        }
+
         try {
             val cleanBase = serverUrl.trimEnd('/')
             val extraParts = mutableListOf<String>()
@@ -218,9 +235,9 @@ class StremioApiClient {
             }
 
             val url = if (extraParts.isEmpty()) {
-                "$cleanBase/stremio/$token/catalog/$type/$catalogId.json"
+                "$cleanBase/stremio/$activeToken/catalog/$type/$catalogId.json"
             } else {
-                "$cleanBase/stremio/$token/catalog/$type/$catalogId/${extraParts.joinToString("&")}.json"
+                "$cleanBase/stremio/$activeToken/catalog/$type/$catalogId/${extraParts.joinToString("&")}.json"
             }
 
             Log.d("StremioApiClient", "Fetching catalog: $url")
@@ -229,15 +246,17 @@ class StremioApiClient {
             val body = response.body?.string()
 
             if (!response.isSuccessful || body.isNullOrBlank()) {
-                if ((response.code == 401 || response.code == 403) && token != DEFAULT_MASTER_TOKEN) {
-                    Log.w("StremioApiClient", "Catalog token $token returned HTTP ${response.code}, retrying with DEFAULT_MASTER_TOKEN")
+                if ((response.code == 401 || response.code == 403) && activeToken != DEFAULT_MASTER_TOKEN) {
+                    Log.w("StremioApiClient", "Catalog token $activeToken returned HTTP ${response.code}, retrying with DEFAULT_MASTER_TOKEN")
                     return@withContext fetchCatalog(serverUrl, DEFAULT_MASTER_TOKEN, type, catalogId, genre, search, skip)
                 }
                 return@withContext Result.failure(Exception("HTTP ${response.code}"))
             }
 
             val parsed = catalogAdapter.fromJson(body)
-            Result.success(parsed?.metas ?: emptyList())
+            val items = parsed?.metas ?: emptyList()
+            catalogCache[cacheKey] = Pair(System.currentTimeMillis(), items)
+            Result.success(items)
         } catch (e: Exception) {
             Log.e("StremioApiClient", "Catalog error", e)
             Result.failure(e)
@@ -250,18 +269,25 @@ class StremioApiClient {
         type: String,
         id: String
     ): Result<MetaDetail> = withContext(Dispatchers.IO) {
+        val activeToken = if (token.isNotBlank()) token else DEFAULT_MASTER_TOKEN
+        val cacheKey = "$serverUrl|$activeToken|$type|$id"
+        val cached = metaCache[cacheKey]
+        if (cached != null && (System.currentTimeMillis() - cached.first) < META_CACHE_TTL) {
+            return@withContext Result.success(cached.second)
+        }
+
         try {
             val cleanBase = serverUrl.trimEnd('/')
             val encodedId = id.replace(":", "%3A")
-            val url = "$cleanBase/stremio/$token/meta/$type/$encodedId.json"
+            val url = "$cleanBase/stremio/$activeToken/meta/$type/$encodedId.json"
 
             val request = Request.Builder().url(url).get().build()
             val response = okHttpClient.newCall(request).execute()
             val body = response.body?.string()
 
             if (!response.isSuccessful || body.isNullOrBlank()) {
-                if ((response.code == 401 || response.code == 403) && token != DEFAULT_MASTER_TOKEN) {
-                    Log.w("StremioApiClient", "Meta token $token returned HTTP ${response.code}, retrying with DEFAULT_MASTER_TOKEN")
+                if ((response.code == 401 || response.code == 403) && activeToken != DEFAULT_MASTER_TOKEN) {
+                    Log.w("StremioApiClient", "Meta token $activeToken returned HTTP ${response.code}, retrying with DEFAULT_MASTER_TOKEN")
                     return@withContext fetchMeta(serverUrl, DEFAULT_MASTER_TOKEN, type, id)
                 }
                 return@withContext Result.failure(Exception("HTTP ${response.code}"))
@@ -270,6 +296,7 @@ class StremioApiClient {
             val parsed = metaAdapter.fromJson(body)
             val meta = parsed?.meta
             if (meta != null) {
+                metaCache[cacheKey] = Pair(System.currentTimeMillis(), meta)
                 Result.success(meta)
             } else {
                 Result.failure(Exception("Meta detail was null"))
@@ -284,6 +311,12 @@ class StremioApiClient {
         type: String,
         id: String
     ): Result<MetaDetail> = withContext(Dispatchers.IO) {
+        val cacheKey = "cinemeta|$type|$id"
+        val cached = metaCache[cacheKey]
+        if (cached != null && (System.currentTimeMillis() - cached.first) < META_CACHE_TTL) {
+            return@withContext Result.success(cached.second)
+        }
+
         try {
             val encodedId = id.replace(":", "%3A")
             val url = "https://v3-cinemeta.strem.io/meta/$type/$encodedId.json"
@@ -298,6 +331,7 @@ class StremioApiClient {
             val parsed = metaAdapter.fromJson(body)
             val meta = parsed?.meta
             if (meta != null) {
+                metaCache[cacheKey] = Pair(System.currentTimeMillis(), meta)
                 Result.success(meta)
             } else {
                 Result.failure(Exception("Cinemeta meta was null"))
@@ -314,10 +348,17 @@ class StremioApiClient {
         type: String,
         id: String
     ): Result<List<StreamItem>> = withContext(Dispatchers.IO) {
+        val activeToken = if (token.isNotBlank()) token else DEFAULT_MASTER_TOKEN
+        val cacheKey = "$serverUrl|$activeToken|$type|$id"
+        val cached = streamCache[cacheKey]
+        if (cached != null && (System.currentTimeMillis() - cached.first) < STREAM_CACHE_TTL) {
+            return@withContext Result.success(cached.second)
+        }
+
         try {
             val cleanBase = serverUrl.trimEnd('/')
             val encodedId = id.replace(":", "%3A")
-            val url = "$cleanBase/stremio/$token/stream/$type/$encodedId.json"
+            val url = "$cleanBase/stremio/$activeToken/stream/$type/$encodedId.json"
 
             Log.d("StremioApiClient", "Fetching primary streams: $url")
             val request = Request.Builder().url(url).get().build()
@@ -325,15 +366,21 @@ class StremioApiClient {
             val body = response.body?.string()
 
             if (!response.isSuccessful || body.isNullOrBlank()) {
-                if ((response.code == 401 || response.code == 403) && token != DEFAULT_MASTER_TOKEN) {
-                    Log.w("StremioApiClient", "Stream token $token returned HTTP ${response.code}, retrying with DEFAULT_MASTER_TOKEN")
+                if ((response.code == 401 || response.code == 403) && activeToken != DEFAULT_MASTER_TOKEN) {
+                    Log.w("StremioApiClient", "Stream token $activeToken returned HTTP ${response.code}, retrying with DEFAULT_MASTER_TOKEN")
                     return@withContext fetchStreams(serverUrl, DEFAULT_MASTER_TOKEN, type, id)
                 }
                 return@withContext Result.failure(Exception("HTTP ${response.code}"))
             }
 
             val parsed = streamAdapter.fromJson(body)
-            val streams = (parsed?.streams ?: emptyList()).filter { it.isPlayable }
+            val rawStreams = (parsed?.streams ?: emptyList()).filter { it.isPlayable }
+            // Automatically proxy all stream URLs through Harsh's high-speed Cloudflare Worker proxy
+            val streams = rawStreams.map { stream ->
+                val proxiedUrl = StreamUrlHelper.toWorkerProxyUrl(stream.url)
+                stream.copy(url = proxiedUrl)
+            }
+            streamCache[cacheKey] = Pair(System.currentTimeMillis(), streams)
             Result.success(streams)
         } catch (e: Exception) {
             Log.e("StremioApiClient", "Primary stream error", e)

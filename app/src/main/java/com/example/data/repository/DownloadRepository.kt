@@ -13,6 +13,7 @@ import androidx.core.content.edit
 import androidx.core.app.NotificationCompat
 import com.example.data.model.DownloadStatus
 import com.example.data.model.DownloadTask
+import com.example.util.StreamUrlHelper
 import com.squareup.moshi.Moshi
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -24,16 +25,36 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.isActive
+import kotlinx.coroutines.joinAll
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import okhttp3.ConnectionPool
+import okhttp3.Dispatcher
+import okhttp3.OkHttpClient
+import okhttp3.Request
 import java.io.File
 import java.io.FileOutputStream
 import java.io.RandomAccessFile
 import java.net.HttpURLConnection
 import java.net.URL
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicLong
 
 class DownloadRepository(private val context: Context) {
+
+    private val downloadHttpClient = OkHttpClient.Builder()
+        .dispatcher(Dispatcher().apply {
+            maxRequests = 64
+            maxRequestsPerHost = 32
+        })
+        .connectionPool(ConnectionPool(32, 5, TimeUnit.MINUTES))
+        .connectTimeout(15, TimeUnit.SECONDS)
+        .readTimeout(30, TimeUnit.SECONDS)
+        .writeTimeout(15, TimeUnit.SECONDS)
+        .retryOnConnectionFailure(true)
+        .followRedirects(true)
+        .followSslRedirects(true)
+        .build()
 
     private val downloadManager = context.getSystemService(Context.DOWNLOAD_SERVICE) as? DownloadManager
     private val notificationManager = context.getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager
@@ -174,7 +195,7 @@ class DownloadRepository(private val context: Context) {
         quality: String,
         rawFileName: String
     ): Long {
-        val cleanStreamUrl = streamUrl.trim()
+        val cleanStreamUrl = StreamUrlHelper.toWorkerProxyUrl(streamUrl.trim()) ?: streamUrl.trim()
         if (cleanStreamUrl.isBlank()) {
             Toast.makeText(context, "Invalid stream URL", Toast.LENGTH_SHORT).show()
             return -1L
@@ -278,7 +299,7 @@ class DownloadRepository(private val context: Context) {
             Log.e("DownloadRepository", "Error removing download from manager", e)
         }
 
-        // Delete file from storage folder path
+        // Delete main file and any .part chunk files from storage folder path
         if (taskToDelete != null) {
             try {
                 val fileToDelete = if (!taskToDelete.localFilePath.isNullOrBlank()) {
@@ -289,6 +310,11 @@ class DownloadRepository(private val context: Context) {
                 if (fileToDelete.exists()) {
                     val isDeleted = fileToDelete.delete()
                     Log.d("DownloadRepository", "Deleted file on cancel: ${fileToDelete.absolutePath}, result = $isDeleted")
+                }
+                val parentDir = fileToDelete.parentFile ?: context.filesDir
+                for (i in 0 until 16) {
+                    val partFile = File(parentDir, "${taskToDelete.fileName}.part$i")
+                    if (partFile.exists()) partFile.delete()
                 }
             } catch (e: Exception) {
                 Log.e("DownloadRepository", "Error deleting file on download cancel", e)
@@ -316,7 +342,7 @@ class DownloadRepository(private val context: Context) {
             saveDownloads()
             Toast.makeText(context, "Download paused", Toast.LENGTH_SHORT).show()
         } else if (task.status == DownloadStatus.PAUSED || task.status == DownloadStatus.FAILED || task.status == DownloadStatus.PENDING) {
-            Toast.makeText(context, "⚡ Resuming Turbo Download...", Toast.LENGTH_SHORT).show()
+            Toast.makeText(context, "⚡ Resuming Turbo Download (8x Parallel Segments)...", Toast.LENGTH_SHORT).show()
             val updated = task.copy(status = DownloadStatus.DOWNLOADING)
             _downloads.value = _downloads.value.map { if (it.downloadId == task.downloadId) updated else it }
             saveDownloads()
@@ -351,128 +377,290 @@ class DownloadRepository(private val context: Context) {
                     File(targetDir, task.fileName)
                 }
 
+                val parentDir = targetFile.parentFile ?: context.filesDir
+
+                // Step 1: Probe the stream URL to detect exact content length and Range support
+                val probeReq = Request.Builder()
+                    .url(task.streamUrl)
+                    .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, Gecko) Chrome/122.0.0.0 Safari/537.36")
+                    .header("Range", "bytes=0-0")
+                    .get()
+                    .build()
+
+                var contentLength = task.totalBytes
+                var supportsRange = true
+
+                try {
+                    val probeResp = downloadHttpClient.newCall(probeReq).execute()
+                    probeResp.use { resp ->
+                        if (resp.isSuccessful) {
+                            val cr = resp.header("Content-Range")
+                            val totalFromCr = cr?.substringAfterLast('/')?.trim()?.toLongOrNull()
+                            if (totalFromCr != null && totalFromCr > 0) {
+                                contentLength = totalFromCr
+                            }
+                            supportsRange = resp.code == 206 || resp.header("Accept-Ranges")?.contains("bytes", ignoreCase = true) == true
+                        }
+                    }
+                } catch (e: Exception) {
+                    Log.w("DownloadRepository", "Probe request failed, using task metadata", e)
+                }
+
                 val existingBytes = if (targetFile.exists()) targetFile.length() else 0L
 
-                val initialUrl = URL(task.streamUrl)
-                var conn = initialUrl.openConnection() as HttpURLConnection
-                conn.connectTimeout = 15000
-                conn.readTimeout = 15000
-                conn.instanceFollowRedirects = true
-                conn.setRequestProperty("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, Gecko) Chrome/122.0.0.0 Safari/537.36")
-                conn.setRequestProperty("Accept", "*/*")
-                if (existingBytes > 0) {
-                    conn.setRequestProperty("Range", "bytes=$existingBytes-")
-                }
-
-                var redirectCount = 0
-                while (conn.responseCode in 300..399 && redirectCount < 5) {
-                    val newUrlStr = conn.getHeaderField("Location") ?: break
-                    conn.disconnect()
-                    val newUrl = URL(newUrlStr)
-                    conn = newUrl.openConnection() as HttpURLConnection
-                    conn.connectTimeout = 15000
-                    conn.readTimeout = 15000
-                    conn.instanceFollowRedirects = true
-                    conn.setRequestProperty("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, Gecko) Chrome/122.0.0.0 Safari/537.36")
-                    conn.setRequestProperty("Accept", "*/*")
-                    if (existingBytes > 0) {
-                        conn.setRequestProperty("Range", "bytes=$existingBytes-")
-                    }
-                    redirectCount++
-                }
-
-                val responseCode = conn.responseCode
-                val isPartial = responseCode == 206
-                val isSuccess = responseCode in 200..299
-
-                if (isSuccess) {
-                    val isAppend = isPartial && existingBytes > 0
-                    val startOffset = if (isAppend) existingBytes else 0L
-                    val contentLength = if (isPartial) {
-                        val cr = conn.getHeaderField("Content-Range")
-                        val totalFromCr = cr?.substringAfterLast('/')?.toLongOrNull()
-                        totalFromCr ?: (startOffset + (conn.contentLengthLong.takeIf { it > 0 } ?: 0L))
-                    } else {
-                        conn.contentLengthLong.takeIf { it > 0 } ?: task.totalBytes
-                    }
-
-                    val inputStream = conn.inputStream
-                    val outputStream = FileOutputStream(targetFile, isAppend)
-
-                    val buffer = ByteArray(128 * 1024)
-                    var totalDownloaded = startOffset
-                    var lastTime = System.currentTimeMillis()
-                    var lastBytes = startOffset
-                    var loopCount = 0
-                    var smoothedSpeed = 0L
-
-                    while (isActive) {
-                        val read = inputStream.read(buffer)
-                        if (read == -1) break
-                        outputStream.write(buffer, 0, read)
-                        totalDownloaded += read
-                        loopCount++
-
-                        if (loopCount % 4 == 0) {
-                            kotlinx.coroutines.yield() // Yield to allow ExoPlayer video streaming threads smooth priority
-                        }
-
-                        val now = System.currentTimeMillis()
-                        val diffTimeSec = (now - lastTime) / 1000.0
-                        if (diffTimeSec >= 0.4) {
-                            val instantSpeed = ((totalDownloaded - lastBytes) / diffTimeSec).toLong().coerceAtLeast(0L)
-                            smoothedSpeed = if (smoothedSpeed == 0L) instantSpeed else ((smoothedSpeed * 0.85) + (instantSpeed * 0.15)).toLong()
-                            lastTime = now
-                            lastBytes = totalDownloaded
-                            val remBytes = (contentLength - totalDownloaded).coerceAtLeast(0L)
-                            val eta = if (smoothedSpeed > 0) remBytes / smoothedSpeed else 0L
-
-                            val updated = task.copy(
-                                bytesDownloaded = totalDownloaded,
-                                totalBytes = if (contentLength > 0) contentLength else totalDownloaded,
-                                downloadSpeedBytesPerSec = smoothedSpeed,
-                                etaSeconds = eta,
-                                status = DownloadStatus.DOWNLOADING,
-                                localFilePath = targetFile.absolutePath
-                            )
-                            _downloads.value = _downloads.value.map {
-                                if (it.downloadId == task.downloadId) updated else it
-                            }
-                            updateSystemNotification(updated)
-                        }
-                    }
-
-                    outputStream.flush()
-                    outputStream.close()
-                    inputStream.close()
-                    conn.disconnect()
-
-                    if (isActive) {
-                        val finalSize = if (contentLength > 0) contentLength else totalDownloaded
-                        val completedTask = task.copy(
-                            bytesDownloaded = finalSize,
-                            totalBytes = finalSize,
-                            downloadSpeedBytesPerSec = 0L,
-                            etaSeconds = 0L,
-                            status = DownloadStatus.COMPLETED,
-                            localFilePath = targetFile.absolutePath
-                        )
-                        _downloads.value = _downloads.value.map {
-                            if (it.downloadId == task.downloadId) completedTask else it
-                        }
-                        updateSystemNotification(completedTask)
-                    }
-                } else {
-                    conn.disconnect()
-                    val failedTask = task.copy(status = DownloadStatus.FAILED, downloadSpeedBytesPerSec = 0L)
+                // If file is already fully downloaded
+                if (contentLength > 0 && existingBytes >= contentLength) {
+                    val completedTask = task.copy(
+                        bytesDownloaded = contentLength,
+                        totalBytes = contentLength,
+                        downloadSpeedBytesPerSec = 0L,
+                        etaSeconds = 0L,
+                        status = DownloadStatus.COMPLETED,
+                        localFilePath = targetFile.absolutePath
+                    )
                     _downloads.value = _downloads.value.map {
-                        if (it.downloadId == task.downloadId) failedTask else it
+                        if (it.downloadId == task.downloadId) completedTask else it
                     }
-                    updateSystemNotification(failedTask)
+                    saveDownloads()
+                    updateSystemNotification(completedTask)
+                    return@launch
+                }
+
+                val remainingBytes = if (contentLength > 0) contentLength - existingBytes else 0L
+                val numWorkers = if (supportsRange && remainingBytes > 30 * 1024 * 1024L) 8 else 1
+
+                if (numWorkers > 1) {
+                    // TRUE 8-WAY PARALLEL MULTI-THREADED SEGMENTED DOWNLOAD
+                    val segmentSize = remainingBytes / numWorkers
+                    val partFiles = (0 until numWorkers).map { i ->
+                        File(parentDir, "${task.fileName}.part$i")
+                    }
+
+                    // Progress monitor job
+                    val progressJob = launch {
+                        var lastTime = System.currentTimeMillis()
+                        var lastBytes = existingBytes + partFiles.sumOf { if (it.exists()) it.length() else 0L }
+                        var smoothedSpeed = 0L
+
+                        while (isActive) {
+                            delay(400)
+                            val now = System.currentTimeMillis()
+                            val currentPartBytes = partFiles.sumOf { if (it.exists()) it.length() else 0L }
+                            val totalDownloaded = (existingBytes + currentPartBytes).coerceAtMost(contentLength)
+                            val timeDiffSec = (now - lastTime) / 1000.0
+
+                            if (timeDiffSec >= 0.35) {
+                                val bytesDiff = (totalDownloaded - lastBytes).coerceAtLeast(0L)
+                                val instantSpeed = (bytesDiff / timeDiffSec).toLong()
+                                smoothedSpeed = if (smoothedSpeed == 0L) instantSpeed else ((smoothedSpeed * 0.75) + (instantSpeed * 0.25)).toLong()
+                                lastTime = now
+                                lastBytes = totalDownloaded
+
+                                val remBytes = (contentLength - totalDownloaded).coerceAtLeast(0L)
+                                val eta = if (smoothedSpeed > 0) remBytes / smoothedSpeed else 0L
+
+                                val updated = task.copy(
+                                    bytesDownloaded = totalDownloaded,
+                                    totalBytes = if (contentLength > 0) contentLength else totalDownloaded,
+                                    downloadSpeedBytesPerSec = smoothedSpeed,
+                                    etaSeconds = eta,
+                                    status = DownloadStatus.DOWNLOADING,
+                                    localFilePath = targetFile.absolutePath
+                                )
+                                _downloads.value = _downloads.value.map {
+                                    if (it.downloadId == task.downloadId) updated else it
+                                }
+                                updateSystemNotification(updated)
+                            }
+                        }
+                    }
+
+                    // Launch all 8 workers in parallel coroutines
+                    val workerJobs = (0 until numWorkers).map { idx ->
+                        launch(Dispatchers.IO) {
+                            val segStart = existingBytes + (idx * segmentSize)
+                            val segEnd = if (idx == numWorkers - 1) contentLength - 1 else existingBytes + ((idx + 1) * segmentSize) - 1
+                            val partFile = partFiles[idx]
+
+                            var retryCount = 0
+                            var done = false
+                            while (!done && retryCount < 5 && isActive) {
+                                try {
+                                    val downloadedInPart = if (partFile.exists()) partFile.length() else 0L
+                                    val reqStart = segStart + downloadedInPart
+                                    if (reqStart > segEnd) {
+                                        done = true
+                                        break
+                                    }
+
+                                    val workerReq = Request.Builder()
+                                        .url(task.streamUrl)
+                                        .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, Gecko) Chrome/122.0.0.0 Safari/537.36")
+                                        .header("Range", "bytes=$reqStart-$segEnd")
+                                        .get()
+                                        .build()
+
+                                    val response = downloadHttpClient.newCall(workerReq).execute()
+                                    if (response.isSuccessful) {
+                                        val body = response.body
+                                        if (body != null) {
+                                            val inputStream = body.byteStream()
+                                            val outputStream = FileOutputStream(partFile, true)
+                                            val buffer = ByteArray(256 * 1024) // 256KB high-throughput buffer
+
+                                            outputStream.use { out ->
+                                                inputStream.use { input ->
+                                                    var bytesRead = 0
+                                                    while (isActive && input.read(buffer).also { bytesRead = it } != -1) {
+                                                        out.write(buffer, 0, bytesRead)
+                                                    }
+                                                }
+                                            }
+                                            if (isActive) {
+                                                val finalPartLen = if (partFile.exists()) partFile.length() else 0L
+                                                if (segStart + finalPartLen >= segEnd) {
+                                                    done = true
+                                                }
+                                            }
+                                        }
+                                    } else {
+                                        retryCount++
+                                        delay(1000)
+                                    }
+                                } catch (e: Exception) {
+                                    if (!isActive) break
+                                    Log.w("DownloadRepository", "Worker $idx chunk connection interrupted, retrying ($retryCount/5)", e)
+                                    retryCount++
+                                    delay(1000)
+                                }
+                            }
+                        }
+                    }
+
+                    // Wait for all 8 workers to finish
+                    workerJobs.joinAll()
+                    progressJob.cancel()
+
+                    // If cancelled or paused, do not merge part files yet
+                    if (!isActive) return@launch
+
+                    // Merge all 8 parts into final file
+                    val outStream = FileOutputStream(targetFile, existingBytes > 0)
+                    outStream.use { out ->
+                        val mergeBuffer = ByteArray(1024 * 1024) // 1MB buffer for fast local disk copy
+                        for (i in 0 until numWorkers) {
+                            val partFile = partFiles[i]
+                            if (partFile.exists()) {
+                                partFile.inputStream().use { input ->
+                                    var read = 0
+                                    while (input.read(mergeBuffer).also { read = it } != -1) {
+                                        out.write(mergeBuffer, 0, read)
+                                    }
+                                }
+                                partFile.delete()
+                            }
+                        }
+                    }
+
+                    val finalSize = if (contentLength > 0) contentLength else targetFile.length()
+                    val completedTask = task.copy(
+                        bytesDownloaded = finalSize,
+                        totalBytes = finalSize,
+                        downloadSpeedBytesPerSec = 0L,
+                        etaSeconds = 0L,
+                        status = DownloadStatus.COMPLETED,
+                        localFilePath = targetFile.absolutePath
+                    )
+                    _downloads.value = _downloads.value.map {
+                        if (it.downloadId == task.downloadId) completedTask else it
+                    }
+                    saveDownloads()
+                    updateSystemNotification(completedTask)
+
+                } else {
+                    // Single stream fallback using OkHttp HTTP/2 with 256KB buffer
+                    val reqBuilder = Request.Builder()
+                        .url(task.streamUrl)
+                        .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, Gecko) Chrome/122.0.0.0 Safari/537.36")
+                    if (existingBytes > 0) {
+                        reqBuilder.header("Range", "bytes=$existingBytes-")
+                    }
+
+                    val response = downloadHttpClient.newCall(reqBuilder.build()).execute()
+                    if (response.isSuccessful) {
+                        val isAppend = response.code == 206 && existingBytes > 0
+                        val startOffset = if (isAppend) existingBytes else 0L
+                        val body = response.body
+                        if (body != null) {
+                            val inStream = body.byteStream()
+                            val outStream = FileOutputStream(targetFile, isAppend)
+                            val buffer = ByteArray(256 * 1024)
+                            var totalDownloaded = startOffset
+                            var lastTime = System.currentTimeMillis()
+                            var lastBytes = startOffset
+                            var smoothedSpeed = 0L
+
+                            outStream.use { out ->
+                                inStream.use { input ->
+                                    var read = 0
+                                    while (isActive && input.read(buffer).also { read = it } != -1) {
+                                        out.write(buffer, 0, read)
+                                        totalDownloaded += read
+
+                                        val now = System.currentTimeMillis()
+                                        val diffSec = (now - lastTime) / 1000.0
+                                        if (diffSec >= 0.35) {
+                                            val instantSpeed = ((totalDownloaded - lastBytes) / diffSec).toLong().coerceAtLeast(0L)
+                                            smoothedSpeed = if (smoothedSpeed == 0L) instantSpeed else ((smoothedSpeed * 0.75) + (instantSpeed * 0.25)).toLong()
+                                            lastTime = now
+                                            lastBytes = totalDownloaded
+                                            val rem = (contentLength - totalDownloaded).coerceAtLeast(0L)
+                                            val eta = if (smoothedSpeed > 0) rem / smoothedSpeed else 0L
+
+                                            val updated = task.copy(
+                                                bytesDownloaded = totalDownloaded,
+                                                totalBytes = if (contentLength > 0) contentLength else totalDownloaded,
+                                                downloadSpeedBytesPerSec = smoothedSpeed,
+                                                etaSeconds = eta,
+                                                status = DownloadStatus.DOWNLOADING,
+                                                localFilePath = targetFile.absolutePath
+                                            )
+                                            _downloads.value = _downloads.value.map {
+                                                if (it.downloadId == task.downloadId) updated else it
+                                            }
+                                            updateSystemNotification(updated)
+                                        }
+                                    }
+                                }
+                            }
+
+                            if (isActive) {
+                                val finalSize = if (contentLength > 0) contentLength else totalDownloaded
+                                val completedTask = task.copy(
+                                    bytesDownloaded = finalSize,
+                                    totalBytes = finalSize,
+                                    downloadSpeedBytesPerSec = 0L,
+                                    etaSeconds = 0L,
+                                    status = DownloadStatus.COMPLETED,
+                                    localFilePath = targetFile.absolutePath
+                                )
+                                _downloads.value = _downloads.value.map {
+                                    if (it.downloadId == task.downloadId) completedTask else it
+                                }
+                                saveDownloads()
+                                updateSystemNotification(completedTask)
+                            }
+                        }
+                    } else {
+                        val failedTask = task.copy(status = DownloadStatus.FAILED, downloadSpeedBytesPerSec = 0L)
+                        _downloads.value = _downloads.value.map {
+                            if (it.downloadId == task.downloadId) failedTask else it
+                        }
+                        updateSystemNotification(failedTask)
+                    }
                 }
             } catch (e: Exception) {
                 if (e is kotlinx.coroutines.CancellationException) {
-                    // Normal cancellation (pause/delete), do not log as error or mark as failed
                     return@launch
                 }
                 Log.e("DownloadRepository", "Turbo downloader exception", e)

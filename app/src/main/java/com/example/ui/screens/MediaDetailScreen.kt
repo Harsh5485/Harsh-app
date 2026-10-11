@@ -38,6 +38,8 @@ import androidx.compose.material.icons.filled.PlayCircle
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Star
 import androidx.compose.material.icons.filled.Person
+import com.example.util.DeviceCodecHelper
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
@@ -297,14 +299,15 @@ fun MediaDetailScreen(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.spacedBy(12.dp)
                     ) {
-                        val firstStream = detailState.streams.firstOrNull()
-                        val qBadge = firstStream?.displayQuality?.takeIf { it.isNotBlank() }?.let { "($it)" } ?: ""
+                        val context = LocalContext.current
+                        val defaultStream = DeviceCodecHelper.selectBestCompatibleStream(detailState.streams, context) ?: detailState.streams.firstOrNull()
+                        val qBadge = defaultStream?.displayQuality?.takeIf { it.isNotBlank() }?.let { "($it)" } ?: ""
                         Button(
                             onClick = {
-                                if (firstStream != null) {
+                                if (defaultStream != null) {
                                     viewModel.playStream(
                                         item = mediaItem,
-                                        streamItem = firstStream,
+                                        streamItem = defaultStream,
                                         availableStreams = detailState.streams,
                                         season = selectedEpisode?.season,
                                         episode = selectedEpisode?.episode,

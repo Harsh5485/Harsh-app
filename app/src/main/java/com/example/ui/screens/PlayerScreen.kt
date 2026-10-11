@@ -131,6 +131,9 @@ import androidx.media3.decoder.ffmpeg.FfmpegAudioRenderer
 import androidx.media3.decoder.ffmpeg.FfmpegLibrary
 import androidx.media3.datasource.DefaultDataSource
 import androidx.media3.datasource.DefaultHttpDataSource
+import androidx.media3.extractor.DefaultExtractorsFactory
+import androidx.media3.extractor.mkv.MatroskaExtractor
+import androidx.media3.extractor.mp4.Mp4Extractor
 import androidx.media3.exoplayer.DefaultLoadControl
 import androidx.media3.exoplayer.DefaultRenderersFactory
 import androidx.media3.exoplayer.ExoPlayer
@@ -141,11 +144,15 @@ import androidx.media3.exoplayer.audio.AudioRendererEventListener
 import androidx.media3.exoplayer.audio.AudioSink
 import androidx.media3.exoplayer.audio.DefaultAudioSink
 import androidx.media3.exoplayer.mediacodec.MediaCodecSelector
+import androidx.media3.exoplayer.mediacodec.MediaCodecUtil
+import androidx.media3.exoplayer.video.VideoRendererEventListener
 import androidx.media3.exoplayer.trackselection.DefaultTrackSelector
 import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.PlayerView
 import coil.compose.AsyncImage
 import com.example.data.model.StreamItem
+import com.example.util.StreamUrlHelper
+import com.example.util.DeviceCodecHelper
 import com.example.ui.player.AppAudioTrack
 import com.example.ui.player.AppSubtitleTrack
 import com.example.ui.player.AppVideoTrack
@@ -199,10 +206,23 @@ fun PlayerScreen(
     val currentOnSaveProgress by rememberUpdatedState(onSaveProgress)
     val currentOnBackClick by rememberUpdatedState(onBackClick)
 
+    // Device Capability Check: If device does not support HEVC or 4K hardware decoding,
+    // automatically select the most compatible stream (like H.264 / 1080p) by default to prevent crashes
     var activeStreamItem by remember(playbackState.mediaId, playbackState.season, playbackState.episode, playbackState.streamItem?.url) {
-        mutableStateOf(playbackState.streamItem)
+        val initial = playbackState.streamItem
+        val streams = playbackState.availableStreams
+        val selected = if (streams.isNotEmpty() && (initial == null || !DeviceCodecHelper.isStreamHardwareCompatible(initial, context))) {
+            DeviceCodecHelper.selectBestCompatibleStream(streams, context) ?: initial
+        } else {
+            initial
+        }
+        mutableStateOf(selected)
     }
-    val streamUrl = activeStreamItem?.url ?: playbackState.streamItem?.url ?: return
+    val rawUrl = activeStreamItem?.url ?: playbackState.streamItem?.url ?: return
+    val streamUrl = StreamUrlHelper.toWorkerProxyUrl(rawUrl) ?: rawUrl
+
+    // Session id counter: used to guarantee complete player & codec recreation from scratch on source switch
+    var playerSessionId by remember { mutableIntStateOf(0) }
 
     var isPlaying by remember { mutableStateOf(true) }
     var isLoading by remember { mutableStateOf(true) }
@@ -214,6 +234,7 @@ fun PlayerScreen(
     var showUpNext by remember { mutableStateOf(false) }
     var upNextTimer by remember { mutableIntStateOf(10) }
     var playerError by remember { mutableStateOf<String?>(null) }
+    val failedStreamUrls = remember { mutableStateListOf<String>() }
 
     // Screen rotation state (Auto rotate to Landscape when entering playback)
     var orientationMode by remember { mutableStateOf(ScreenOrientationMode.LANDSCAPE) }
@@ -290,9 +311,76 @@ fun PlayerScreen(
         }
     }
 
-    // ExoPlayer instance with native FFmpeg decoding for Dolby DDP/Atmos Stereo PCM decoding & MediaCodec fallback
-    val exoPlayer: androidx.media3.exoplayer.ExoPlayer = remember {
+    // Configure Software Decoder Fallback: ensures software decoders (like c2.android.hevc.decoder, OMX.google.hevc.decoder)
+    // are included and prioritized on hardware failure, preventing crashes on low-end devices.
+    val fallbackMediaCodecSelector = remember {
+        MediaCodecSelector { mimeType, requiresSecureDecoder, requiresTunnelingDecoder ->
+            val decoders = ArrayList<androidx.media3.exoplayer.mediacodec.MediaCodecInfo>()
+
+            val primary = runCatching {
+                MediaCodecUtil.getDecoderInfos(mimeType, requiresSecureDecoder, requiresTunnelingDecoder)
+            }.getOrDefault(emptyList())
+            decoders.addAll(primary)
+
+            if (requiresSecureDecoder || requiresTunnelingDecoder) {
+                val standard = runCatching {
+                    MediaCodecUtil.getDecoderInfos(mimeType, false, false)
+                }.getOrDefault(emptyList())
+                for (info in standard) {
+                    if (!decoders.any { it.name == info.name }) {
+                        decoders.add(info)
+                    }
+                }
+            }
+
+            // Always ensure software decoders are available as backup if hardware fails
+            val allDecoders = runCatching {
+                MediaCodecUtil.getDecoderInfos(mimeType, false, false)
+            }.getOrDefault(emptyList())
+
+            val softwareDecoders = allDecoders.filter { info ->
+                !info.hardwareAccelerated ||
+                info.name.startsWith("c2.android.", ignoreCase = true) ||
+                info.name.startsWith("OMX.google.", ignoreCase = true) ||
+                info.name.contains(".sw.", ignoreCase = true) ||
+                info.name.contains("software", ignoreCase = true)
+            }
+
+            for (sw in softwareDecoders) {
+                if (!decoders.any { it.name == sw.name }) {
+                    decoders.add(sw)
+                }
+            }
+
+            decoders
+        }
+    }
+
+    // ExoPlayer instance: re-created cleanly when playerSessionId increments on source switch
+    val exoPlayer: androidx.media3.exoplayer.ExoPlayer = remember(playerSessionId) {
         val renderersFactory = object : DefaultRenderersFactory(context) {
+            override fun buildVideoRenderers(
+                context: Context,
+                extensionRendererMode: Int,
+                mediaCodecSelector: MediaCodecSelector,
+                enableDecoderFallback: Boolean,
+                eventHandler: Handler,
+                eventListener: VideoRendererEventListener,
+                allowedVideoJoiningTimeMs: Long,
+                out: ArrayList<Renderer>
+            ) {
+                super.buildVideoRenderers(
+                    context,
+                    extensionRendererMode,
+                    fallbackMediaCodecSelector,
+                    /* enableDecoderFallback = */ true,
+                    eventHandler,
+                    eventListener,
+                    allowedVideoJoiningTimeMs,
+                    out
+                )
+            }
+
             override fun buildAudioRenderers(
                 context: Context,
                 extensionRendererMode: Int,
@@ -303,7 +391,8 @@ fun PlayerScreen(
                 eventListener: AudioRendererEventListener,
                 out: ArrayList<Renderer>
             ) {
-                // Add native FFmpeg software decoder (Dolby Digital Plus DDP, Dolby Atmos, AC3, DTS, TrueHD)
+                // Add native FFmpeg software decoder FIRST so that Dolby Digital Plus (DDP 5.1 / E-AC-3)
+                // and AC-3/DTS/TrueHD audio streams decode directly to Stereo PCM without phone AudioTrack failures
                 runCatching {
                     if (FfmpegLibrary.isAvailable()) {
                         val ffmpegRenderer = FfmpegAudioRenderer(eventHandler, eventListener, audioSink).apply {
@@ -315,73 +404,95 @@ fun PlayerScreen(
                 }.onFailure { e ->
                     android.util.Log.w("PlayerScreen", "FFmpeg renderer fallback: ${e.message}")
                 }
+
+                // Also add standard platform MediaCodec renderers (AAC, MP3, Opus, etc.)
                 super.buildAudioRenderers(
                     context,
                     DefaultRenderersFactory.EXTENSION_RENDERER_MODE_OFF,
-                    mediaCodecSelector,
-                    enableDecoderFallback,
+                    fallbackMediaCodecSelector,
+                    /* enableDecoderFallback = */ true,
                     audioSink,
                     eventHandler,
                     eventListener,
                     out
                 )
             }
-
-            override fun buildAudioSink(
-                context: Context,
-                enableFloatOutput: Boolean,
-                enableAudioTrackPlaybackParams: Boolean
-            ): AudioSink {
-                return DefaultAudioSink.Builder(context)
-                    .setEnableFloatOutput(true)
-                    .setEnableAudioTrackPlaybackParams(true)
-                    .build()
-            }
         }.apply {
             setExtensionRendererMode(DefaultRenderersFactory.EXTENSION_RENDERER_MODE_PREFER)
             setEnableDecoderFallback(true)
+            setMediaCodecSelector(fallbackMediaCodecSelector)
         }
 
         val trackSelector = DefaultTrackSelector(context).apply {
             setParameters(
                 buildUponParameters()
-                    .setExceedRendererCapabilitiesIfNecessary(true)
+                    .setForceHighestSupportedBitrate(false)
             )
         }
 
-        // Ultra-fast start & smooth re-buffering with optimized low-latency startup
+        // Fast startup and smooth buffering: prioritizes time over size thresholds so playback starts immediately
+        // without waiting to buffer 50MB+ over mobile data
         val loadControl = DefaultLoadControl.Builder()
             .setBufferDurationsMs(
-                /* minBufferMs = */ 2_500, // Reduced from 8s for faster start
+                /* minBufferMs = */ 2_500,
                 /* maxBufferMs = */ 30_000,
                 /* bufferForPlaybackMs = */ 500,
                 /* bufferForPlaybackAfterRebufferMs = */ 1_000
             )
             .setBackBuffer(
-                /* backBufferDurationMs = */ 8_000,
+                /* backBufferDurationMs = */ 5_000,
                 /* retainBackBufferFromKeyframe = */ true
             )
             .setPrioritizeTimeOverSizeThresholds(true)
             .build()
 
         val httpDataSourceFactory = DefaultHttpDataSource.Factory()
-            .setUserAgent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
-            .setConnectTimeoutMs(6_000)
-            .setReadTimeoutMs(15_000)
+            .setUserAgent("Mozilla/5.0 (Linux; Android 14; Mobile) AppleWebKit/537.36 (KHTML, Gecko) Chrome/122.0.0.0 Mobile Safari/537.36")
+            .setConnectTimeoutMs(25_000)
+            .setReadTimeoutMs(40_000)
             .setAllowCrossProtocolRedirects(true)
             .setKeepPostFor302Redirects(true)
+            .setDefaultRequestProperties(
+                mapOf(
+                    "Accept" to "*/*",
+                    "Connection" to "keep-alive"
+                )
+            )
 
         val defaultDataSourceFactory = DefaultDataSource.Factory(context, httpDataSourceFactory)
 
-        val mediaSourceFactory = DefaultMediaSourceFactory(context)
-            .setDataSourceFactory(defaultDataSourceFactory)
+        val extractorsFactory = DefaultExtractorsFactory().apply {
+            setMatroskaExtractorFlags(0)
+            setMp4ExtractorFlags(Mp4Extractor.FLAG_WORKAROUND_IGNORE_EDIT_LISTS)
+            setConstantBitrateSeekingEnabled(true)
+        }
+
+        val mediaSourceFactory = DefaultMediaSourceFactory(defaultDataSourceFactory, extractorsFactory)
 
         ExoPlayer.Builder(context, renderersFactory)
             .setTrackSelector(trackSelector)
             .setLoadControl(loadControl)
             .setMediaSourceFactory(mediaSourceFactory)
             .setAudioAttributes(androidx.media3.common.AudioAttributes.DEFAULT, true)
+            .setSeekParameters(androidx.media3.exoplayer.SeekParameters.CLOSEST_SYNC)
             .build()
+    }
+
+    // Completely releases the previous media item, clears surface/codec state, and re-initializes from scratch
+    val switchStreamWithFullReset: (StreamItem) -> Unit = { newStream: StreamItem ->
+        val currentPos = if (exoPlayer.currentPosition > 0L) exoPlayer.currentPosition else currentPosMs
+        currentPosMs = currentPos
+
+        // Completely release previous media item, surface and codec state
+        exoPlayer.stop()
+        exoPlayer.clearMediaItems()
+        exoPlayer.clearVideoSurface()
+
+        activeStreamItem = newStream
+        playerError = null
+        isLoading = true
+        playerSessionId++ // triggers fresh re-initialization of ExoPlayer from scratch!
+        onSwitchStream?.invoke(newStream)
     }
 
     // Track the current episode/item to distinguish between quality switch and next episode
@@ -391,21 +502,27 @@ fun PlayerScreen(
     var lastVideoKey by remember { mutableStateOf<String?>(null) }
 
     // Handle stream changes (initial load, quality switch, or next episode)
-    LaunchedEffect(playbackState.mediaId, playbackState.season, playbackState.episode, streamUrl) {
+    LaunchedEffect(playbackState.mediaId, playbackState.season, playbackState.episode, streamUrl, playerSessionId) {
         val isNewEpisode = lastVideoKey == null || currentVideoKey != lastVideoKey
         lastVideoKey = currentVideoKey
+        if (isNewEpisode) {
+            failedStreamUrls.clear()
+        }
         
         isLoading = true
         playerError = null
         showUpNext = false
         upNextTimer = 15
         
+        // Stop previous playback and clear items to guarantee a fresh state without inheriting previous episode position
+        exoPlayer.stop()
+        exoPlayer.clearMediaItems()
+        
         // Differentiate: Episode switch (reset to initial) vs Quality switch (maintain current)
         val targetPos = if (isNewEpisode) {
             playbackState.initialPositionMs.coerceAtLeast(0L)
         } else {
-            // Quality switch: keep current position if we have a media item loaded
-            if (exoPlayer.currentMediaItem != null && exoPlayer.currentPosition > 0L) exoPlayer.currentPosition else currentPosMs
+            currentPosMs.coerceAtLeast(0L)
         }
         
         // Reset UI progress states immediately for clean visual transition
@@ -423,15 +540,20 @@ fun PlayerScreen(
             streamUrl.toUri()
         }
         
-        val mediaItem = androidx.media3.common.MediaItem.fromUri(parsedUri)
-        exoPlayer.stop()
-        exoPlayer.clearMediaItems()
-        exoPlayer.setMediaItem(mediaItem, /* resetPosition = */ true)
-        if (targetPos > 0L) {
-            exoPlayer.seekTo(targetPos)
-        } else {
-            exoPlayer.seekTo(0, 0L)
+        val cleanUrl = streamUrl.substringBefore('?').lowercase()
+        val mediaItemBuilder = androidx.media3.common.MediaItem.Builder().setUri(parsedUri)
+        if (cleanUrl.endsWith(".m3u8") || streamUrl.contains(".m3u8", ignoreCase = true)) {
+            mediaItemBuilder.setMimeType(androidx.media3.common.MimeTypes.APPLICATION_M3U8)
+        } else if (cleanUrl.endsWith(".mpd") || streamUrl.contains(".mpd", ignoreCase = true)) {
+            mediaItemBuilder.setMimeType(androidx.media3.common.MimeTypes.APPLICATION_MPD)
+        } else if (cleanUrl.endsWith(".mkv") || streamUrl.contains(".mkv", ignoreCase = true)) {
+            mediaItemBuilder.setMimeType(androidx.media3.common.MimeTypes.VIDEO_MATROSKA)
+        } else if (cleanUrl.endsWith(".mp4") || streamUrl.contains(".mp4", ignoreCase = true)) {
+            mediaItemBuilder.setMimeType(androidx.media3.common.MimeTypes.VIDEO_MP4)
         }
+        val mediaItem = mediaItemBuilder.build()
+
+        exoPlayer.setMediaItem(mediaItem, targetPos)
         exoPlayer.prepare()
         exoPlayer.playWhenReady = true
         exoPlayer.play()
@@ -448,6 +570,26 @@ fun PlayerScreen(
                 val pos = player.currentPosition
                 if (pos >= 0 && !isSeeking) {
                     currentPosMs = pos
+                }
+            }
+
+            override fun onRenderedFirstFrame() {
+                isLoading = false
+                isSeeking = false
+            }
+
+            override fun onPositionDiscontinuity(
+                oldPosition: Player.PositionInfo,
+                newPosition: Player.PositionInfo,
+                reason: Int
+            ) {
+                if (reason == Player.DISCONTINUITY_REASON_SEEK) {
+                    val p = newPosition.positionMs
+                    if (p >= 0L) {
+                        currentPosMs = p
+                    }
+                    isSeeking = false
+                    isLoading = false
                 }
             }
 
@@ -492,8 +634,41 @@ fun PlayerScreen(
 
             override fun onPlayerError(error: androidx.media3.common.PlaybackException) {
                 isLoading = false
-                playerError = "Playback Error: ${error.localizedMessage ?: "Unknown network or codec issue"}"
-                android.util.Log.e("PlayerScreen", "ExoPlayer Error", error)
+                val failedUrl = activeStreamItem?.url
+                if (failedUrl != null && !failedStreamUrls.contains(failedUrl)) {
+                    failedStreamUrls.add(failedUrl)
+                }
+                android.util.Log.e("PlayerScreen", "ExoPlayer Error: ${error.errorCodeName} (cause: ${error.cause?.message})", error)
+                
+                // If a hardware codec failure occurred or stream failed, switch to most compatible stream (e.g. 1080p H.264)
+                val currentStreams = playbackState.availableStreams
+                val nextStream = DeviceCodecHelper.selectBestCompatibleStream(
+                    currentStreams.filter { it.url != null && !failedStreamUrls.contains(it.url) },
+                    context
+                )
+                if (nextStream != null && nextStream.url != null) {
+                    val isCodecFailure = error.errorCode == androidx.media3.common.PlaybackException.ERROR_CODE_DECODER_INIT_FAILED ||
+                            error.errorCode == androidx.media3.common.PlaybackException.ERROR_CODE_DECODING_FAILED
+                    val toastMsg = if (isCodecFailure) {
+                        "Codec not supported on hardware. Switching to compatible 1080p stream..."
+                    } else {
+                        "Stream failed, trying alternate source..."
+                    }
+                    android.widget.Toast.makeText(context, toastMsg, android.widget.Toast.LENGTH_SHORT).show()
+                    switchStreamWithFullReset(nextStream)
+                    return
+                }
+
+                val msg = when (error.errorCode) {
+                    androidx.media3.common.PlaybackException.ERROR_CODE_DECODER_INIT_FAILED,
+                    androidx.media3.common.PlaybackException.ERROR_CODE_DECODING_FAILED -> "Video/audio codec not supported by this phone's hardware"
+                    androidx.media3.common.PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_FAILED,
+                    androidx.media3.common.PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_TIMEOUT -> "Network connection timeout: server is slow to respond"
+                    androidx.media3.common.PlaybackException.ERROR_CODE_PARSING_CONTAINER_UNSUPPORTED,
+                    androidx.media3.common.PlaybackException.ERROR_CODE_PARSING_CONTAINER_MALFORMED -> "Unsupported media stream format"
+                    else -> error.localizedMessage ?: "Playback failed. Please try another source."
+                }
+                playerError = msg
             }
 
             override fun onIsPlayingChanged(playing: Boolean) {
@@ -517,8 +692,16 @@ fun PlayerScreen(
         exoPlayer.addListener(listener)
 
         onDispose {
-            currentOnSaveProgress(exoPlayer.currentPosition, exoPlayer.duration.coerceAtLeast(0L))
+            val p = exoPlayer.currentPosition
+            val d = exoPlayer.duration.coerceAtLeast(0L)
+            if (p > 0L) {
+                currentOnSaveProgress(p, d)
+            }
             exoPlayer.removeListener(listener)
+            // Completely release player, clear surface and native codec allocations
+            exoPlayer.stop()
+            exoPlayer.clearMediaItems()
+            exoPlayer.clearVideoSurface()
             exoPlayer.release()
         }
     }
@@ -530,7 +713,7 @@ fun PlayerScreen(
             delay(800)
             val pos = exoPlayer.currentPosition
             val dur = exoPlayer.duration
-            if (pos >= 0) {
+            if (pos >= 0 && !isSeeking) {
                 currentPosMs = pos
             }
             if (dur > 0 && dur != androidx.media3.common.C.TIME_UNSET) {
@@ -615,17 +798,20 @@ fun PlayerScreen(
                                 // Rewind 10s
                                 isSeeking = true
                                 isLoading = true
-                                val newPos = (exoPlayer.currentPosition - 10000).coerceAtLeast(0L)
-                                exoPlayer.seekTo(newPos)
+                                val basePos = if (currentPosMs > 0L) currentPosMs else exoPlayer.currentPosition.coerceAtLeast(0L)
+                                val newPos = (basePos - 10000L).coerceAtLeast(0L)
                                 currentPosMs = newPos
+                                exoPlayer.seekTo(newPos)
                                 doubleTapFeedback = "-10s"
                             } else if (offset.x > screenWidth * 0.6f) {
                                 // Forward 10s
                                 isSeeking = true
                                 isLoading = true
-                                val newPos = (exoPlayer.currentPosition + 10000).coerceAtMost(exoPlayer.duration)
-                                exoPlayer.seekTo(newPos)
+                                val basePos = if (currentPosMs > 0L) currentPosMs else exoPlayer.currentPosition.coerceAtLeast(0L)
+                                val maxDur = if (totalDurationMs > 0L) totalDurationMs else if (exoPlayer.duration > 0L) exoPlayer.duration else Long.MAX_VALUE
+                                val newPos = (basePos + 10000L).coerceIn(0L, maxDur)
                                 currentPosMs = newPos
+                                exoPlayer.seekTo(newPos)
                                 doubleTapFeedback = "+10s"
                             } else {
                                 // Center double tap: play/pause
@@ -705,8 +891,9 @@ fun PlayerScreen(
                             val seekRangeMs = 120000L 
                             val deltaMs = ((dragAmount.x / width) * seekRangeMs).toLong()
                             
-                            val newTarget = (seekGestureTargetMs + deltaMs).coerceIn(0L, totalDurationMs)
-                            seekGestureTargetMs = if (seekGestureTargetMs == 0L) (dragStartPosMs + deltaMs).coerceIn(0L, totalDurationMs) else newTarget
+                            val maxDur = if (totalDurationMs > 0L) totalDurationMs else if (exoPlayer.duration > 0L) exoPlayer.duration else Long.MAX_VALUE
+                            val target = if (seekGestureTargetMs == 0L) (dragStartPosMs + deltaMs) else (seekGestureTargetMs + deltaMs)
+                            seekGestureTargetMs = target.coerceIn(0L, maxDur)
                             
                             val diff = seekGestureTargetMs - dragStartPosMs
                             val sign = if (diff >= 0) "+" else "-"
@@ -714,11 +901,11 @@ fun PlayerScreen(
                         }
                     },
                     onDragEnd = {
-                        if (isHorizontalDrag) {
+                        if (isHorizontalDrag && seekGestureTargetMs >= 0L) {
                             isSeeking = true
                             isLoading = true
-                            exoPlayer.seekTo(seekGestureTargetMs)
                             currentPosMs = seekGestureTargetMs
+                            exoPlayer.seekTo(seekGestureTargetMs)
                         }
                         isSeekingByGesture = false
                         seekGestureTargetMs = 0L
@@ -749,7 +936,10 @@ fun PlayerScreen(
                 }
             },
             update = { playerView ->
-                playerView.player = exoPlayer
+                if (playerView.player !== exoPlayer) {
+                    playerView.player = null
+                    playerView.player = exoPlayer
+                }
                 playerView.resizeMode = resizeMode
             },
             modifier = Modifier.fillMaxSize()
@@ -1062,16 +1252,36 @@ fun PlayerScreen(
                         textAlign = androidx.compose.ui.text.style.TextAlign.Center
                     )
                     Spacer(Modifier.height(24.dp))
-                    Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
+                    Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                         Button(
                             onClick = {
                                 playerError = null
-                                exoPlayer.prepare()
-                                exoPlayer.play()
+                                isLoading = true
+                                // Cleanly reset player state and re-initialize from scratch
+                                exoPlayer.stop()
+                                exoPlayer.clearMediaItems()
+                                exoPlayer.clearVideoSurface()
+                                playerSessionId++
                             },
                             colors = ButtonDefaults.buttonColors(containerColor = NuvioPrimary, contentColor = Color.Black)
                         ) {
                             Text("Retry")
+                        }
+                        if (playbackState.availableStreams.size > 1) {
+                            Button(
+                                onClick = {
+                                    val other = DeviceCodecHelper.selectBestCompatibleStream(
+                                        playbackState.availableStreams.filter { it.url != activeStreamItem?.url },
+                                        context
+                                    ) ?: playbackState.availableStreams.firstOrNull { it.url != activeStreamItem?.url }
+                                    if (other != null) {
+                                        switchStreamWithFullReset(other)
+                                    }
+                                },
+                                colors = ButtonDefaults.buttonColors(containerColor = NuvioSecondary, contentColor = Color.Black)
+                            ) {
+                                Text("Switch Source")
+                            }
                         }
                         Button(
                             onClick = onBackClick,
@@ -1277,9 +1487,10 @@ fun PlayerScreen(
                         onClick = {
                             isSeeking = true
                             isLoading = true
-                            val newPos = (exoPlayer.currentPosition - 10000).coerceAtLeast(0L)
-                            exoPlayer.seekTo(newPos)
+                            val basePos = if (currentPosMs > 0L) currentPosMs else exoPlayer.currentPosition.coerceAtLeast(0L)
+                            val newPos = (basePos - 10000L).coerceAtLeast(0L)
                             currentPosMs = newPos
+                            exoPlayer.seekTo(newPos)
                         },
                         modifier = Modifier
                             .size(54.dp)
@@ -1327,9 +1538,11 @@ fun PlayerScreen(
                         onClick = {
                             isSeeking = true
                             isLoading = true
-                            val newPos = (exoPlayer.currentPosition + 10000).coerceAtMost(exoPlayer.duration)
-                            exoPlayer.seekTo(newPos)
+                            val basePos = if (currentPosMs > 0L) currentPosMs else exoPlayer.currentPosition.coerceAtLeast(0L)
+                            val maxDur = if (totalDurationMs > 0L) totalDurationMs else if (exoPlayer.duration > 0L) exoPlayer.duration else Long.MAX_VALUE
+                            val newPos = (basePos + 10000L).coerceIn(0L, maxDur)
                             currentPosMs = newPos
+                            exoPlayer.seekTo(newPos)
                         },
                         modifier = Modifier
                             .size(54.dp)
@@ -1359,8 +1572,11 @@ fun PlayerScreen(
                 ) {
                     // Time Scrubber
                     Slider(
-                        value = if (totalDurationMs > 0) currentPosMs.toFloat() else 0f,
-                        onValueChange = { currentPosMs = it.toLong() },
+                        value = if (totalDurationMs > 0L) currentPosMs.toFloat().coerceIn(0f, totalDurationMs.toFloat()) else 0f,
+                        onValueChange = {
+                            isSeeking = true
+                            currentPosMs = it.toLong().coerceIn(0L, if (totalDurationMs > 0L) totalDurationMs else Long.MAX_VALUE)
+                        },
                         onValueChangeFinished = {
                             isSeeking = true
                             isLoading = true
@@ -1541,13 +1757,7 @@ fun PlayerScreen(
                             streams = playbackState.availableStreams,
                             currentStream = activeStreamItem,
                             onSelect = { newStream ->
-                                val currentPos = exoPlayer.currentPosition
-                                activeStreamItem = newStream
-                                onSwitchStream?.invoke(newStream)
-                                exoPlayer.setMediaItem(MediaItem.fromUri((newStream.url ?: "").toUri()))
-                                exoPlayer.seekTo(currentPos)
-                                exoPlayer.prepare()
-                                exoPlayer.play()
+                                switchStreamWithFullReset(newStream)
                                 activeSheet = PlayerSheetType.NONE
                             }
                         )
@@ -1813,6 +2023,7 @@ private fun StreamsSheet(
     currentStream: StreamItem?,
     onSelect: (StreamItem) -> Unit
 ) {
+    val context = LocalContext.current
     Column(
         modifier = Modifier
             .fillMaxWidth()
@@ -1864,7 +2075,10 @@ private fun StreamsSheet(
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         Column(modifier = Modifier.weight(1f)) {
-                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Row(
+                                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
                                 Surface(
                                     shape = RoundedCornerShape(4.dp),
                                     color = NuvioPrimary
@@ -1877,6 +2091,46 @@ private fun StreamsSheet(
                                         modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
                                     )
                                 }
+                                Surface(
+                                    shape = RoundedCornerShape(4.dp),
+                                    color = NuvioSurfaceVariant
+                                ) {
+                                    Text(
+                                        text = stream.displayVideoCodec,
+                                        color = NuvioTextPrimary,
+                                        fontSize = 10.sp,
+                                        fontWeight = FontWeight.Medium,
+                                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                    )
+                                }
+                                val isHwSupported = DeviceCodecHelper.isStreamHardwareCompatible(stream, context)
+                                if (!isHwSupported) {
+                                    Surface(
+                                        shape = RoundedCornerShape(4.dp),
+                                        color = Color(0xFFD32F2F).copy(alpha = 0.2f)
+                                    ) {
+                                        Text(
+                                            text = "⚠️ No HW Dec",
+                                            color = Color(0xFFFF8A80),
+                                            fontSize = 10.sp,
+                                            fontWeight = FontWeight.Bold,
+                                            modifier = Modifier.padding(horizontal = 5.dp, vertical = 2.dp)
+                                        )
+                                    }
+                                } else {
+                                    Surface(
+                                        shape = RoundedCornerShape(4.dp),
+                                        color = NuvioSuccess.copy(alpha = 0.15f)
+                                    ) {
+                                        Text(
+                                            text = "✓ Compatible",
+                                            color = NuvioSuccess,
+                                            fontSize = 10.sp,
+                                            fontWeight = FontWeight.SemiBold,
+                                            modifier = Modifier.padding(horizontal = 5.dp, vertical = 2.dp)
+                                        )
+                                    }
+                                }
                                 if (stream.formattedSize.isNotBlank()) {
                                     Surface(
                                         shape = RoundedCornerShape(4.dp),
@@ -1885,7 +2139,7 @@ private fun StreamsSheet(
                                         Text(
                                             text = stream.formattedSize,
                                             color = NuvioTextSecondary,
-                                            fontSize = 11.sp,
+                                            fontSize = 10.sp,
                                             modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
                                         )
                                     }

@@ -14,6 +14,7 @@ import com.example.data.model.TokenItem
 import com.example.data.model.VideoEpisode
 import com.example.data.repository.DownloadRepository
 import com.example.data.repository.MediaRepository
+import com.example.util.DeviceCodecHelper
 import kotlinx.coroutines.async
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -319,7 +320,7 @@ class NuvioViewModel(application: Application) : AndroidViewModel(application) {
             _detailState.update { it.copy(selectedEpisode = episode, isLoadingStreams = true) }
             val streams = repository.getStreams(episode.id, "series").getOrDefault(emptyList())
             _detailState.update { it.copy(streams = streams, isLoadingStreams = false) }
-            val firstStream = streams.firstOrNull()
+            val firstStream = DeviceCodecHelper.selectBestCompatibleStream(streams, getApplication()) ?: streams.firstOrNull()
             if (firstStream != null) {
                 playStream(
                     item = item,
@@ -479,7 +480,7 @@ class NuvioViewModel(application: Application) : AndroidViewModel(application) {
                 streams = repository.getStreams(next.id, "series").getOrDefault(emptyList())
             }
             
-            val first = streams.firstOrNull()
+            val first = DeviceCodecHelper.selectBestCompatibleStream(streams, getApplication()) ?: streams.firstOrNull()
             if (first != null) {
                 _detailState.update { it.copy(selectedEpisode = next) }
                 playStream(
@@ -493,7 +494,7 @@ class NuvioViewModel(application: Application) : AndroidViewModel(application) {
                 )
             } else {
                 // If no separate stream found on server, fallback to current available streams (for season pack files)
-                val fallbackStream = current.availableStreams.firstOrNull()
+                val fallbackStream = DeviceCodecHelper.selectBestCompatibleStream(current.availableStreams, getApplication()) ?: current.availableStreams.firstOrNull()
                 if (fallbackStream != null) {
                     _detailState.update { it.copy(selectedEpisode = next) }
                     playStream(
@@ -521,7 +522,7 @@ class NuvioViewModel(application: Application) : AndroidViewModel(application) {
                 _detailState.value.selectedEpisode?.id ?: item.id
             } else item.id
             val streams = repository.getStreams(targetId, item.type).getOrDefault(emptyList())
-            val bestStream = streams.firstOrNull()
+            val bestStream = DeviceCodecHelper.selectBestCompatibleStream(streams, getApplication()) ?: streams.firstOrNull()
             if (bestStream != null) {
                 playStream(
                     item = item,
@@ -673,7 +674,7 @@ class NuvioViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch {
             val streams = _detailState.value.streams
             if (streams.isNotEmpty()) {
-                val best = streams.first()
+                val best = DeviceCodecHelper.selectBestCompatibleStream(streams, getApplication()) ?: streams.first()
                 downloadStream(
                     item = item,
                     stream = best,
@@ -686,7 +687,7 @@ class NuvioViewModel(application: Application) : AndroidViewModel(application) {
                 _detailState.update { it.copy(isLoadingStreams = true) }
                 val fetched = repository.getStreams(video.id, "series").getOrDefault(emptyList())
                 _detailState.update { it.copy(isLoadingStreams = false, streams = fetched) }
-                val best = fetched.firstOrNull()
+                val best = DeviceCodecHelper.selectBestCompatibleStream(fetched, getApplication()) ?: fetched.firstOrNull()
                 if (best != null) {
                     downloadStream(
                         item = item,
