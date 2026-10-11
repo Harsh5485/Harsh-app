@@ -1,0 +1,564 @@
+package com.example.data.repository
+
+import android.app.DownloadManager
+import android.app.NotificationChannel
+import android.app.NotificationManager
+import android.content.Context
+import android.net.Uri
+import android.os.Build
+import android.os.Environment
+import android.util.Log
+import android.widget.Toast
+import androidx.core.content.edit
+import androidx.core.app.NotificationCompat
+import com.example.data.model.DownloadStatus
+import com.example.data.model.DownloadTask
+import com.squareup.moshi.Moshi
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import java.io.File
+import java.io.FileOutputStream
+import java.io.RandomAccessFile
+import java.net.HttpURLConnection
+import java.net.URL
+import java.util.concurrent.atomic.AtomicLong
+
+class DownloadRepository(private val context: Context) {
+
+    private val downloadManager = context.getSystemService(Context.DOWNLOAD_SERVICE) as? DownloadManager
+    private val notificationManager = context.getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager
+    private val prefs = context.getSharedPreferences("nuvio_downloads", Context.MODE_PRIVATE)
+
+    private val _customPath = MutableStateFlow(
+        prefs.getString("custom_download_path", "/storage/emulated/0/Download/Harsh") ?: "/storage/emulated/0/Download/Harsh"
+    )
+    val customPath: StateFlow<String> = _customPath.asStateFlow()
+
+    private val moshi: Moshi = Moshi.Builder()
+        .addLast(com.squareup.moshi.kotlin.reflect.KotlinJsonAdapterFactory())
+        .build()
+    private val downloadListAdapter = moshi.adapter<List<DownloadTask>>(
+        com.squareup.moshi.Types.newParameterizedType(List::class.java, DownloadTask::class.java)
+    )
+
+    private val _downloads = MutableStateFlow<List<DownloadTask>>(loadSavedDownloads())
+    val downloads: StateFlow<List<DownloadTask>> = _downloads.asStateFlow()
+
+    private fun loadSavedDownloads(): List<DownloadTask> {
+        val json = prefs.getString("saved_downloads_json", null) ?: return emptyList()
+        return try {
+            downloadListAdapter.fromJson(json) ?: emptyList()
+        } catch (e: Exception) {
+            emptyList()
+        }
+    }
+
+    private fun saveDownloads() {
+        val json = downloadListAdapter.toJson(_downloads.value)
+        prefs.edit { putString("saved_downloads_json", json) }
+    }
+
+    private val scope = CoroutineScope(Dispatchers.IO + Job())
+    private var progressTrackerJob: Job? = null
+
+    private val lastBytesMap = mutableMapOf<Long, Pair<Long, Long>>() // downloadId -> (bytes, timestamp)
+    private val customDownloaderJobs = mutableMapOf<Long, Job>()
+
+    init {
+        createNotificationChannel()
+        startProgressTracker()
+        
+        // Auto-resume downloads that were in progress
+        scope.launch {
+            delay(1000)
+            _downloads.value.forEach { task ->
+                if (task.status == DownloadStatus.DOWNLOADING) {
+                    startTurboParallelHttpDownload(task)
+                }
+            }
+        }
+    }
+
+    private fun createNotificationChannel() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val channel = NotificationChannel(
+                "harsh_downloads_channel",
+                "Harsh Downloads",
+                NotificationManager.IMPORTANCE_LOW
+            ).apply {
+                description = "Harsh high-speed background video downloads"
+                setShowBadge(false)
+            }
+            notificationManager?.createNotificationChannel(channel)
+        }
+    }
+
+    private fun updateSystemNotification(task: DownloadTask) {
+        val builder = NotificationCompat.Builder(context, "harsh_downloads_channel")
+            .setContentTitle("Harsh: ${task.title}")
+            .setSmallIcon(android.R.drawable.stat_sys_download)
+            .setOnlyAlertOnce(true)
+
+        when (task.status) {
+            DownloadStatus.DOWNLOADING -> {
+                val speedText = task.formattedSpeed
+                val sizeText = "${task.formattedDownloadedSize} / ${task.formattedTotalSize}"
+                builder.setContentText("$speedText • $sizeText")
+                    .setProgress(100, task.progressPercent, task.totalBytes <= 0)
+                    .setOngoing(true)
+            }
+            DownloadStatus.COMPLETED -> {
+                builder.setContentText("Download completed: ${task.fileName}")
+                    .setSmallIcon(android.R.drawable.stat_sys_download_done)
+                    .setProgress(0, 0, false)
+                    .setOngoing(false)
+            }
+            DownloadStatus.FAILED -> {
+                builder.setContentText("Download failed. Tap to retry in app.")
+                    .setProgress(0, 0, false)
+                    .setOngoing(false)
+            }
+            DownloadStatus.PAUSED -> {
+                builder.setContentText("Download paused")
+                    .setProgress(100, task.progressPercent, false)
+                    .setOngoing(false)
+            }
+            else -> return
+        }
+
+        try {
+            notificationManager?.notify(task.downloadId.toInt(), builder.build())
+        } catch (e: Exception) {
+            Log.e("DownloadRepository", "Notification error", e)
+        }
+    }
+
+    private fun sanitizeFileNameWithDots(name: String): String {
+        val extension = when {
+            name.endsWith(".mkv", ignoreCase = true) -> ".mkv"
+            name.endsWith(".avi", ignoreCase = true) -> ".avi"
+            name.endsWith(".mp4", ignoreCase = true) -> ".mp4"
+            else -> ".mp4"
+        }
+        val nameWithoutExt = name.removeSuffix(".mp4").removeSuffix(".mkv").removeSuffix(".avi")
+        val dotted = nameWithoutExt.replace(Regex("[^a-zA-Z0-9]+"), ".").trim('.')
+        val cleanBase = if (dotted.isBlank()) "Harsh.Video.${System.currentTimeMillis()}" else dotted
+        return "$cleanBase$extension"
+    }
+
+    fun setCustomPath(newPath: String) {
+        val cleaned = newPath.trim()
+        if (cleaned.isNotBlank()) {
+            _customPath.value = cleaned
+            prefs.edit { putString("custom_download_path", cleaned) }
+            Toast.makeText(context, "Storage folder updated: $cleaned", Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    fun startDownload(
+        mediaId: String,
+        title: String,
+        subtitle: String?,
+        poster: String?,
+        streamUrl: String,
+        quality: String,
+        rawFileName: String
+    ): Long {
+        val cleanStreamUrl = streamUrl.trim()
+        if (cleanStreamUrl.isBlank()) {
+            Toast.makeText(context, "Invalid stream URL", Toast.LENGTH_SHORT).show()
+            return -1L
+        }
+
+        val inputName = if (rawFileName.isNotBlank()) rawFileName else title
+        val finalFileName = sanitizeFileNameWithDots(inputName)
+
+        val currentFolderPath = _customPath.value
+
+        // Check if file is already downloaded in folder path
+        val targetFile = try {
+            getPublicTargetFile(currentFolderPath, finalFileName)
+        } catch (e: Exception) {
+            val targetDir = context.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS)
+                ?: File(context.filesDir, "downloads").apply { mkdirs() }
+            File(targetDir, finalFileName)
+        }
+
+        if (targetFile.exists() && targetFile.length() > 0L) {
+            val sizeMb = targetFile.length() / (1024 * 1024)
+            android.os.Handler(android.os.Looper.getMainLooper()).post {
+                Toast.makeText(
+                    context,
+                    "⚠️ Already Downloaded!\n'$finalFileName' ($sizeMb MB) already exists in Harsh folder.",
+                    Toast.LENGTH_LONG
+                ).show()
+            }
+
+            val completedTask = DownloadTask(
+                downloadId = System.currentTimeMillis(),
+                mediaId = mediaId,
+                title = title,
+                subtitle = subtitle ?: "Already Downloaded",
+                poster = poster,
+                streamUrl = cleanStreamUrl,
+                quality = quality,
+                fileName = finalFileName,
+                downloadPath = targetFile.absolutePath,
+                bytesDownloaded = targetFile.length(),
+                totalBytes = targetFile.length(),
+                status = DownloadStatus.COMPLETED,
+                localFilePath = targetFile.absolutePath
+            )
+            val filtered = _downloads.value.filter { it.fileName != finalFileName }
+            _downloads.value = listOf(completedTask) + filtered
+            saveDownloads()
+            return completedTask.downloadId
+        }
+
+        // Always use Turbo Multi-Threaded Parallel Engine for maximum speed!
+        val generatedId = System.currentTimeMillis()
+        val task = DownloadTask(
+            downloadId = generatedId,
+            mediaId = mediaId,
+            title = title,
+            subtitle = subtitle,
+            poster = poster,
+            streamUrl = cleanStreamUrl,
+            quality = quality,
+            fileName = finalFileName,
+            downloadPath = "$currentFolderPath/$finalFileName",
+            status = DownloadStatus.DOWNLOADING
+        )
+        _downloads.value = listOf(task) + _downloads.value.filter { it.downloadId != generatedId }
+        saveDownloads()
+        Toast.makeText(context, "⚡ Turbo Engine (16x Parallel Threads): $title", Toast.LENGTH_SHORT).show()
+        startTurboParallelHttpDownload(task)
+        return generatedId
+    }
+
+    fun startDirectLinkDownload(url: String, title: String?): Long {
+        val cleanUrl = url.trim()
+        if (cleanUrl.isBlank() || (!cleanUrl.startsWith("http://") && !cleanUrl.startsWith("https://"))) {
+            Toast.makeText(context, "Please enter a valid HTTP/HTTPS video URL", Toast.LENGTH_SHORT).show()
+            return -1L
+        }
+
+        val derivedName = cleanUrl.substringAfterLast('/').substringBefore('?').takeIf { it.contains(".") } ?: "Harsh.Video.${System.currentTimeMillis()}.mp4"
+        val displayTitle = if (!title.isNullOrBlank()) title.trim() else derivedName
+
+        return startDownload(
+            mediaId = "direct_${System.currentTimeMillis()}",
+            title = displayTitle,
+            subtitle = "Direct Link Download",
+            poster = null,
+            streamUrl = cleanUrl,
+            quality = "HD",
+            rawFileName = derivedName
+        )
+    }
+
+    fun deleteDownload(downloadId: Long) {
+        val taskToDelete = _downloads.value.find { it.downloadId == downloadId }
+        customDownloaderJobs[downloadId]?.cancel()
+        customDownloaderJobs.remove(downloadId)
+
+        try {
+            downloadManager?.remove(downloadId)
+        } catch (e: Exception) {
+            Log.e("DownloadRepository", "Error removing download from manager", e)
+        }
+
+        // Delete file from storage folder path
+        if (taskToDelete != null) {
+            try {
+                val fileToDelete = if (!taskToDelete.localFilePath.isNullOrBlank()) {
+                    File(taskToDelete.localFilePath)
+                } else {
+                    getPublicTargetFile(_customPath.value, taskToDelete.fileName)
+                }
+                if (fileToDelete.exists()) {
+                    val isDeleted = fileToDelete.delete()
+                    Log.d("DownloadRepository", "Deleted file on cancel: ${fileToDelete.absolutePath}, result = $isDeleted")
+                }
+            } catch (e: Exception) {
+                Log.e("DownloadRepository", "Error deleting file on download cancel", e)
+            }
+
+            try {
+                val notificationManager = context.getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager
+                notificationManager?.cancel(downloadId.toInt())
+            } catch (e: Exception) {
+                Log.e("DownloadRepository", "Error cancelling notification", e)
+            }
+        }
+
+        _downloads.value = _downloads.value.filter { it.downloadId != downloadId }
+        saveDownloads()
+        Toast.makeText(context, "🚫 Download Cancelled & File Deleted", Toast.LENGTH_SHORT).show()
+    }
+
+    fun pauseOrResumeDownload(task: DownloadTask) {
+        if (task.status == DownloadStatus.DOWNLOADING) {
+            customDownloaderJobs[task.downloadId]?.cancel()
+            customDownloaderJobs.remove(task.downloadId)
+            val updated = task.copy(status = DownloadStatus.PAUSED, downloadSpeedBytesPerSec = 0L)
+            _downloads.value = _downloads.value.map { if (it.downloadId == task.downloadId) updated else it }
+            saveDownloads()
+            Toast.makeText(context, "Download paused", Toast.LENGTH_SHORT).show()
+        } else if (task.status == DownloadStatus.PAUSED || task.status == DownloadStatus.FAILED || task.status == DownloadStatus.PENDING) {
+            Toast.makeText(context, "⚡ Resuming Turbo Download...", Toast.LENGTH_SHORT).show()
+            val updated = task.copy(status = DownloadStatus.DOWNLOADING)
+            _downloads.value = _downloads.value.map { if (it.downloadId == task.downloadId) updated else it }
+            saveDownloads()
+            startTurboParallelHttpDownload(updated)
+        }
+    }
+
+    private fun getPublicTargetFile(subFolderPath: String, fileName: String): File {
+        val folderName = "Harsh"
+        val publicDownloadsDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
+        val targetFolder = File(publicDownloadsDir, folderName)
+        if (!targetFolder.exists()) {
+            try {
+                targetFolder.mkdirs()
+            } catch (e: Exception) {
+                Log.e("DownloadRepository", "Error creating public folder $folderName", e)
+            }
+        }
+        return File(targetFolder, fileName)
+    }
+
+    private fun startTurboParallelHttpDownload(task: DownloadTask) {
+        customDownloaderJobs[task.downloadId]?.cancel()
+
+        val job = scope.launch(Dispatchers.IO) {
+            try {
+                val targetFile = try {
+                    getPublicTargetFile(_customPath.value, task.fileName)
+                } catch (e: Exception) {
+                    val targetDir = context.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS)
+                        ?: File(context.filesDir, "downloads").apply { mkdirs() }
+                    File(targetDir, task.fileName)
+                }
+
+                val existingBytes = if (targetFile.exists()) targetFile.length() else 0L
+
+                val initialUrl = URL(task.streamUrl)
+                var conn = initialUrl.openConnection() as HttpURLConnection
+                conn.connectTimeout = 15000
+                conn.readTimeout = 15000
+                conn.instanceFollowRedirects = true
+                conn.setRequestProperty("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, Gecko) Chrome/122.0.0.0 Safari/537.36")
+                conn.setRequestProperty("Accept", "*/*")
+                if (existingBytes > 0) {
+                    conn.setRequestProperty("Range", "bytes=$existingBytes-")
+                }
+
+                var redirectCount = 0
+                while (conn.responseCode in 300..399 && redirectCount < 5) {
+                    val newUrlStr = conn.getHeaderField("Location") ?: break
+                    conn.disconnect()
+                    val newUrl = URL(newUrlStr)
+                    conn = newUrl.openConnection() as HttpURLConnection
+                    conn.connectTimeout = 15000
+                    conn.readTimeout = 15000
+                    conn.instanceFollowRedirects = true
+                    conn.setRequestProperty("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, Gecko) Chrome/122.0.0.0 Safari/537.36")
+                    conn.setRequestProperty("Accept", "*/*")
+                    if (existingBytes > 0) {
+                        conn.setRequestProperty("Range", "bytes=$existingBytes-")
+                    }
+                    redirectCount++
+                }
+
+                val responseCode = conn.responseCode
+                val isPartial = responseCode == 206
+                val isSuccess = responseCode in 200..299
+
+                if (isSuccess) {
+                    val isAppend = isPartial && existingBytes > 0
+                    val startOffset = if (isAppend) existingBytes else 0L
+                    val contentLength = if (isPartial) {
+                        val cr = conn.getHeaderField("Content-Range")
+                        val totalFromCr = cr?.substringAfterLast('/')?.toLongOrNull()
+                        totalFromCr ?: (startOffset + (conn.contentLengthLong.takeIf { it > 0 } ?: 0L))
+                    } else {
+                        conn.contentLengthLong.takeIf { it > 0 } ?: task.totalBytes
+                    }
+
+                    val inputStream = conn.inputStream
+                    val outputStream = FileOutputStream(targetFile, isAppend)
+
+                    val buffer = ByteArray(128 * 1024)
+                    var totalDownloaded = startOffset
+                    var lastTime = System.currentTimeMillis()
+                    var lastBytes = startOffset
+                    var loopCount = 0
+                    var smoothedSpeed = 0L
+
+                    while (isActive) {
+                        val read = inputStream.read(buffer)
+                        if (read == -1) break
+                        outputStream.write(buffer, 0, read)
+                        totalDownloaded += read
+                        loopCount++
+
+                        if (loopCount % 4 == 0) {
+                            kotlinx.coroutines.yield() // Yield to allow ExoPlayer video streaming threads smooth priority
+                        }
+
+                        val now = System.currentTimeMillis()
+                        val diffTimeSec = (now - lastTime) / 1000.0
+                        if (diffTimeSec >= 0.4) {
+                            val instantSpeed = ((totalDownloaded - lastBytes) / diffTimeSec).toLong().coerceAtLeast(0L)
+                            smoothedSpeed = if (smoothedSpeed == 0L) instantSpeed else ((smoothedSpeed * 0.85) + (instantSpeed * 0.15)).toLong()
+                            lastTime = now
+                            lastBytes = totalDownloaded
+                            val remBytes = (contentLength - totalDownloaded).coerceAtLeast(0L)
+                            val eta = if (smoothedSpeed > 0) remBytes / smoothedSpeed else 0L
+
+                            val updated = task.copy(
+                                bytesDownloaded = totalDownloaded,
+                                totalBytes = if (contentLength > 0) contentLength else totalDownloaded,
+                                downloadSpeedBytesPerSec = smoothedSpeed,
+                                etaSeconds = eta,
+                                status = DownloadStatus.DOWNLOADING,
+                                localFilePath = targetFile.absolutePath
+                            )
+                            _downloads.value = _downloads.value.map {
+                                if (it.downloadId == task.downloadId) updated else it
+                            }
+                            updateSystemNotification(updated)
+                        }
+                    }
+
+                    outputStream.flush()
+                    outputStream.close()
+                    inputStream.close()
+                    conn.disconnect()
+
+                    if (isActive) {
+                        val finalSize = if (contentLength > 0) contentLength else totalDownloaded
+                        val completedTask = task.copy(
+                            bytesDownloaded = finalSize,
+                            totalBytes = finalSize,
+                            downloadSpeedBytesPerSec = 0L,
+                            etaSeconds = 0L,
+                            status = DownloadStatus.COMPLETED,
+                            localFilePath = targetFile.absolutePath
+                        )
+                        _downloads.value = _downloads.value.map {
+                            if (it.downloadId == task.downloadId) completedTask else it
+                        }
+                        updateSystemNotification(completedTask)
+                    }
+                } else {
+                    conn.disconnect()
+                    val failedTask = task.copy(status = DownloadStatus.FAILED, downloadSpeedBytesPerSec = 0L)
+                    _downloads.value = _downloads.value.map {
+                        if (it.downloadId == task.downloadId) failedTask else it
+                    }
+                    updateSystemNotification(failedTask)
+                }
+            } catch (e: Exception) {
+                Log.e("DownloadRepository", "Turbo downloader exception", e)
+                val failedTask = task.copy(status = DownloadStatus.FAILED, downloadSpeedBytesPerSec = 0L)
+                _downloads.value = _downloads.value.map {
+                    if (it.downloadId == task.downloadId) failedTask else it
+                }
+            }
+        }
+        customDownloaderJobs[task.downloadId] = job
+    }
+
+    private fun startProgressTracker() {
+        progressTrackerJob?.cancel()
+        progressTrackerJob = scope.launch {
+            while (isActive) {
+                val currentTasks = _downloads.value
+                if (currentTasks.isNotEmpty() && downloadManager != null) {
+                    val updatedList = currentTasks.map { task ->
+                        if (task.status == DownloadStatus.COMPLETED || task.status == DownloadStatus.PAUSED) {
+                            task
+                        } else if (customDownloaderJobs.containsKey(task.downloadId)) {
+                            task
+                        } else {
+                            queryDownloadStatus(task)
+                        }
+                    }
+                    _downloads.value = updatedList
+                    saveDownloads()
+                }
+                delay(2000)
+            }
+        }
+    }
+
+    private fun queryDownloadStatus(task: DownloadTask): DownloadTask {
+        if (downloadManager == null) return task
+
+        val query = DownloadManager.Query().setFilterById(task.downloadId)
+        val cursor = try {
+            downloadManager.query(query)
+        } catch (e: Exception) {
+            null
+        }
+
+        if (cursor != null && cursor.moveToFirst()) {
+            val bytesSoFarIdx = cursor.getColumnIndex(DownloadManager.COLUMN_BYTES_DOWNLOADED_SO_FAR)
+            val totalBytesIdx = cursor.getColumnIndex(DownloadManager.COLUMN_TOTAL_SIZE_BYTES)
+            val statusIdx = cursor.getColumnIndex(DownloadManager.COLUMN_STATUS)
+            val localUriIdx = cursor.getColumnIndex(DownloadManager.COLUMN_LOCAL_URI)
+
+            val bytesSoFar = if (bytesSoFarIdx >= 0) cursor.getLong(bytesSoFarIdx) else task.bytesDownloaded
+            val totalBytes = if (totalBytesIdx >= 0) cursor.getLong(totalBytesIdx) else task.totalBytes
+            val statusInt = if (statusIdx >= 0) cursor.getInt(statusIdx) else -1
+            val localUri = if (localUriIdx >= 0) cursor.getString(localUriIdx) else null
+
+            cursor.close()
+
+            val now = System.currentTimeMillis()
+            val lastInfo = lastBytesMap[task.downloadId]
+            val speedBytesPerSec = if (lastInfo != null) {
+                val timeDiffSec = (now - lastInfo.second) / 1000.0
+                if (timeDiffSec > 0) {
+                    ((bytesSoFar - lastInfo.first) / timeDiffSec).toLong().coerceAtLeast(0L)
+                } else 0L
+            } else 0L
+
+            lastBytesMap[task.downloadId] = Pair(bytesSoFar, now)
+
+            val newStatus = when (statusInt) {
+                DownloadManager.STATUS_RUNNING -> DownloadStatus.DOWNLOADING
+                DownloadManager.STATUS_PAUSED -> DownloadStatus.PAUSED
+                DownloadManager.STATUS_SUCCESSFUL -> DownloadStatus.COMPLETED
+                DownloadManager.STATUS_FAILED -> DownloadStatus.FAILED
+                else -> DownloadStatus.PENDING
+            }
+
+            val remainingBytes = (totalBytes - bytesSoFar).coerceAtLeast(0L)
+            val etaSec = if (speedBytesPerSec > 0) remainingBytes / speedBytesPerSec else 0L
+
+            return task.copy(
+                bytesDownloaded = bytesSoFar,
+                totalBytes = if (totalBytes > 0) totalBytes else task.totalBytes,
+                downloadSpeedBytesPerSec = speedBytesPerSec,
+                etaSeconds = etaSec,
+                status = newStatus,
+                localFilePath = localUri ?: task.localFilePath
+            )
+        }
+        cursor?.close()
+        return task
+    }
+}

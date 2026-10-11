@@ -1,0 +1,6 @@
+{
+  "name": "Harsh",
+  "description": "Stream movies and series with fast streaming and Telegram-Stremio integration.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
