@@ -4,6 +4,12 @@
   <img src="art/banner.svg" alt="Harsh Banner" width="100%" />
 </p>
 
+<p align="center">
+  <a href="https://github.com/Harsh5485/Harsh-app/releases"><img src="https://img.shields.io/badge/Download-APK-22c55e?style=for-the-badge&logo=android&logoColor=white" alt="Download APK" /></a>
+  &nbsp;
+  <a href="https://github.com/Harsh5485/Harsh-app/archive/refs/heads/main.zip"><img src="https://img.shields.io/badge/Download-Source_ZIP-3b82f6?style=for-the-badge&logo=github&logoColor=white" alt="Download Source Code" /></a>
+</p>
+
 ---
 
 ## 📱 About The App
@@ -34,36 +40,45 @@
 
 ---
 
-## 📥 Download Options
+## 📥 Download Links
 
-### 1️⃣ Direct Download in AI Studio
-- Click on the **Settings / Export** menu in the top right corner of AI Studio.
-- Choose **Export Project as ZIP** (for Source Code) or **Generate APK**.
-
-### 2️⃣ Download from GitHub Releases
-Once you push this project to your GitHub repository:
-- **GitHub Actions** will automatically build the APK.
-- Go to the **Releases** tab of your GitHub repository or click below:
-  - 📦 **[Download Latest APK](../../releases/latest)**
-  - 📁 **[Download Source Code ZIP](../../archive/refs/heads/main.zip)**
+- 📦 **[Download APK (Releases)](https://github.com/Harsh5485/Harsh-app/releases)**
+- 📁 **[Download Source Code (ZIP)](https://github.com/Harsh5485/Harsh-app/archive/refs/heads/main.zip)**
 
 ---
 
-## 🛠️ Build & Setup Instructions
+## ⚙️ How to generate the APK on GitHub Releases
 
-### Local Development
+Since your repository **`Harsh5485/Harsh-app`** currently has no published release:
+
+1. **Option 1: Automatic Build via GitHub Actions**
+   - Push this updated code from AI Studio to GitHub.
+   - Go to the **Actions** tab in `https://github.com/Harsh5485/Harsh-app`.
+   - The automated workflow (`.github/workflows/build-apk.yml`) will build `app-debug.apk` automatically and create the Release!
+
+2. **Option 2: Create Release Manually**
+   - Go to `https://github.com/Harsh5485/Harsh-app/releases`.
+   - Click the green **"Create a new release"** button.
+   - Tag version: `v1.0.0`
+   - Release title: `Harsh App v1.0.0`
+   - Attach the APK file (which you can generate from AI Studio top-right **Settings -> Generate APK** or from Android Studio `gradle assembleDebug`).
+   - Click **Publish release**.
+
+---
+
+## 🛠️ Local Development
+
 1. Clone the repository:
    ```bash
-   git clone https://github.com/your-username/Harsh.git
-   cd Harsh
+   git clone https://github.com/Harsh5485/Harsh-app.git
+   cd Harsh-app
    ```
-2. Open the project in **Android Studio** (Jellyfish or newer).
-3. Sync Gradle and run on an Android Device / Emulator (Android 7.0+ / API 24+).
-4. Build the APK locally using Gradle:
+2. Open in **Android Studio**.
+3. Build the APK locally using Gradle:
    ```bash
    gradle assembleDebug
    ```
-   The APK file will be generated at `app/build/outputs/apk/debug/app-debug.apk`.
+   Output APK: `app/build/outputs/apk/debug/app-debug.apk`.
 
 ---
 
