@@ -1,0 +1,79 @@
+<svg width="360" height="640" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#0f172a"/>
+      <stop offset="100%" stop-color="#020617"/>
+    </linearGradient>
+    <linearGradient id="cardGrad" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#1e293b"/>
+      <stop offset="100%" stop-color="#0f172a"/>
+    </linearGradient>
+    <linearGradient id="accent" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#38bdf8"/>
+      <stop offset="100%" stop-color="#818cf8"/>
+    </linearGradient>
+  </defs>
+
+  <rect width="360" height="640" fill="url(#bg)"/>
+
+  <!-- Status Bar -->
+  <text x="20" y="24" font-family="sans-serif" font-size="12" fill="#94a3b8">9:41</text>
+  <circle cx="310" cy="20" r="4" fill="#38bdf8"/>
+  <circle cx="325" cy="20" r="4" fill="#38bdf8"/>
+  <rect x="335" y="15" width="12" height="10" rx="2" fill="#38bdf8"/>
+
+  <!-- App Header -->
+  <text x="20" y="65" font-family="sans-serif" font-size="22" font-weight="800" fill="#ffffff">Harsh</text>
+  <text x="80" y="65" font-family="sans-serif" font-size="12" font-weight="bold" fill="#38bdf8" opacity="0.8">STREAMING</text>
+  <circle cx="325" cy="60" r="16" fill="#1e293b"/>
+  <path d="M320 55 L330 65 M330 55 L320 65" stroke="#94a3b8" stroke-width="2"/>
+
+  <!-- Category Pills -->
+  <rect x="20" y="90" width="70" height="32" rx="16" fill="url(#accent)"/>
+  <text x="38" y="111" font-family="sans-serif" font-size="12" font-weight="bold" fill="#ffffff">Home</text>
+
+  <rect x="100" y="90" width="80" height="32" rx="16" fill="#1e293b"/>
+  <text x="118" y="111" font-family="sans-serif" font-size="12" font-weight="600" fill="#94a3b8">Movies</text>
+
+  <rect x="190" y="90" width="80" height="32" rx="16" fill="#1e293b"/>
+  <text x="208" y="111" font-family="sans-serif" font-size="12" font-weight="600" fill="#94a3b8">Series</text>
+
+  <!-- Featured Banner Card -->
+  <g transform="translate(20, 135)">
+    <rect x="0" y="0" width="320" height="160" rx="16" fill="url(#cardGrad)" stroke="#334155" stroke-width="1"/>
+    <rect x="15" y="15" width="60" height="20" rx="10" fill="#38bdf8" opacity="0.2"/>
+    <text x="26" y="29" font-family="sans-serif" font-size="10" font-weight="bold" fill="#38bdf8">FEATURED</text>
+    <text x="15" y="65" font-family="sans-serif" font-size="18" font-weight="bold" fill="#ffffff">Action Thriller 2026</text>
+    <text x="15" y="85" font-family="sans-serif" font-size="12" fill="#94a3b8">1080p • Ultra HD • Fast Playback</text>
+    
+    <rect x="15" y="105" width="100" height="36" rx="18" fill="url(#accent)"/>
+    <text x="40" y="128" font-family="sans-serif" font-size="12" font-weight="bold" fill="#ffffff">▶ Watch</text>
+  </g>
+
+  <!-- Section Title -->
+  <text x="20" y="325" font-family="sans-serif" font-size="16" font-weight="bold" fill="#ffffff">Trending Now</text>
+
+  <!-- Grid Items -->
+  <g transform="translate(20, 340)">
+    <!-- Movie Item 1 -->
+    <rect x="0" y="0" width="100" height="150" rx="12" fill="#1e293b"/>
+    <rect x="10" y="115" width="80" height="12" rx="4" fill="#38bdf8" opacity="0.6"/>
+    <rect x="10" y="132" width="50" height="8" rx="2" fill="#64748b"/>
+
+    <!-- Movie Item 2 -->
+    <rect x="110" y="0" width="100" height="150" rx="12" fill="#1e293b"/>
+    <rect x="120" y="115" width="80" height="12" rx="4" fill="#818cf8" opacity="0.6"/>
+    <rect x="120" y="132" width="50" height="8" rx="2" fill="#64748b"/>
+
+    <!-- Movie Item 3 -->
+    <rect x="220" y="0" width="100" height="150" rx="12" fill="#1e293b"/>
+    <rect x="230" y="115" width="80" height="12" rx="4" fill="#22d3ee" opacity="0.6"/>
+    <rect x="230" y="132" width="50" height="8" rx="2" fill="#64748b"/>
+  </g>
+
+  <!-- Bottom Nav -->
+  <rect x="0" y="580" width="360" height="60" fill="#0f172a" stroke="#1e293b" stroke-width="1"/>
+  <text x="50" y="615" font-family="sans-serif" font-size="12" font-weight="bold" fill="#38bdf8">🏠 Home</text>
+  <text x="150" y="615" font-family="sans-serif" font-size="12" fill="#64748b">🔍 Search</text>
+  <text x="250" y="615" font-family="sans-serif" font-size="12" fill="#64748b">⚙️ Settings</text>
+</svg>

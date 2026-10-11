@@ -1,0 +1,58 @@
+name: Build & Release Android APK
+
+on:
+  push:
+    branches: [ "main", "master" ]
+    tags:
+      - 'v*'
+  pull_request:
+    branches: [ "main", "master" ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: Build Android APK
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+          cache: gradle
+
+      - name: Grant execute permission for gradlew
+        run: chmod +x gradlew || true
+
+      - name: Build Debug APK with Gradle
+        run: gradle assembleDebug
+
+      - name: Upload APK Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Harsh-App-Debug-APK
+          path: app/build/outputs/apk/debug/app-debug.apk
+
+      - name: Create GitHub Release and Attach APK
+        if: startsWith(github.ref, 'refs/tags/') || github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'
+        uses: softprops/action-gh-release@v1
+        with:
+          files: app/build/outputs/apk/debug/app-debug.apk
+          tag_name: v1.0.0
+          name: Harsh App v1.0.0 Release
+          body: |
+            ## Harsh App - Latest APK Release
+
+            ### Features in this build:
+            - **Fast Streaming**: Movies & TV Series with Telegram and Stremio integration.
+            - **Software Decoder Fallback**: Automatic fallback to software decoding for HEVC/4K videos on low-end devices.
+            - **Full Stream Reset**: Clean codec release when changing resolutions or media items.
+            - **Device Capability Check**: Automatically selects 1080p/H.264 streams on hardware with limited HEVC capabilities.
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
