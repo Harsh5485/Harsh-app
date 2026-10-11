@@ -319,7 +319,7 @@ class StremioApiClient {
             val encodedId = id.replace(":", "%3A")
             val url = "$cleanBase/stremio/$token/stream/$type/$encodedId.json"
 
-            Log.d("StremioApiClient", "Fetching streams: $url")
+            Log.d("StremioApiClient", "Fetching primary streams: $url")
             val request = Request.Builder().url(url).get().build()
             val response = okHttpClient.newCall(request).execute()
             val body = response.body?.string()
@@ -336,7 +336,7 @@ class StremioApiClient {
             val streams = (parsed?.streams ?: emptyList()).filter { it.isPlayable }
             Result.success(streams)
         } catch (e: Exception) {
-            Log.e("StremioApiClient", "Stream error", e)
+            Log.e("StremioApiClient", "Primary stream error", e)
             Result.failure(e)
         }
     }

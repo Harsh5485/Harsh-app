@@ -37,7 +37,8 @@ data class VideoEpisode(
     val thumbnail: String? = null,
     val released: String? = null,
     val isCombined: Boolean = false,
-    val sizeText: String? = null
+    val sizeText: String? = null,
+    val hasServerFile: Boolean = true // Default to true if not known
 ) {
     val displayTitle: String
         get() = when {
@@ -139,7 +140,7 @@ data class StreamItem(
                 bytes > 1_200_000_000L -> "1080p"
                 bytes > 600_000_000L -> "720p"
                 combined.contains("hd") -> "HD"
-                else -> "HD"
+                else -> ""
             }
         }
 

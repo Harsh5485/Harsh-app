@@ -136,13 +136,23 @@ class MediaRepository(private val context: Context) {
     }
 
     suspend fun getLastWatchPosition(mediaId: String, season: Int? = null, episode: Int? = null): Long {
-        val uniqueId = if (season != null && episode != null) {
+        val isEpisodeRequested = season != null && episode != null
+        val uniqueId = if (isEpisodeRequested) {
             "series_${mediaId}_${season}_$episode"
         } else {
             "movie_$mediaId"
         }
-        val history = db.watchHistoryDao().getById(uniqueId) ?: db.watchHistoryDao().getLatestByMediaId(mediaId)
-        return history?.positionMs ?: 0L
+        
+        val history = db.watchHistoryDao().getById(uniqueId)
+        if (history != null) return history.positionMs
+        
+        // If a specific episode was requested but not found in history, start from beginning (0)
+        // rather than inheriting the position of the previously watched episode from getLatestByMediaId.
+        if (isEpisodeRequested) return 0L
+        
+        // For movies or general series resume, use the latest entry
+        val latestHistory = db.watchHistoryDao().getLatestByMediaId(mediaId)
+        return latestHistory?.positionMs ?: 0L
     }
 
     suspend fun deleteFromHistory(id: String) {
@@ -347,15 +357,36 @@ class MediaRepository(private val context: Context) {
                 }
 
                 // Standard individual episodes (from Cinemeta or standard Server)
+                val serverEpisodes = tgVideos.filter { v ->
+                    val title = (v.title ?: v.name ?: "").trim()
+                    !(v.isCombined || v.season == 0 || (v.episode ?: 0) >= 1000 ||
+                            title.contains("Combined", ignoreCase = true) ||
+                            title.contains("Batch", ignoreCase = true) ||
+                            title.contains("Complete", ignoreCase = true))
+                }
+                val serverIds = serverEpisodes.map { it.id }.toSet()
+
                 val standardEpisodes = if (cineVideos.isNotEmpty()) {
-                    cineVideos.map { cv -> cv.copy(isCombined = false) }
-                } else {
-                    tgVideos.filter { v ->
-                        val title = (v.title ?: v.name ?: "").trim()
-                        !(v.season == 0 || (v.episode ?: 0) >= 1000 ||
-                                title.contains("Combined", ignoreCase = true) ||
-                                title.contains("Batch", ignoreCase = true))
+                    val cineEpisodesMapped = cineVideos.map { cv -> 
+                        val serverMatch = serverEpisodes.firstOrNull { 
+                            it.id == cv.id || (it.season == cv.season && it.episode == cv.episode)
+                        }
+                        val hasServer = serverMatch != null || serverIds.contains(cv.id)
+                        val effectiveId = serverMatch?.id ?: cv.id
+                        cv.copy(
+                            id = effectiveId,
+                            isCombined = false, 
+                            hasServerFile = hasServer
+                        ) 
                     }
+                    // Also include episodes from server that are NOT in Cinemeta's list
+                    val cineIds = cineVideos.map { it.id }.toSet()
+                    val extraFromServer = serverEpisodes.filter { !cineIds.contains(it.id) }
+                        .map { it.copy(isCombined = false, hasServerFile = true) }
+                    
+                    cineEpisodesMapped + extraFromServer
+                } else {
+                    serverEpisodes.map { it.copy(isCombined = false, hasServerFile = true) }
                 }
 
                 val mergedVideos = (standardEpisodes + combinedVideos).distinctBy { it.id }
@@ -407,16 +438,26 @@ class MediaRepository(private val context: Context) {
             if (parts.size >= 3) {
                 val seriesId = parts[0]
                 val seasonNum = parts[1].toIntOrNull() ?: 1
-                val combinedEpisodeId = "$seriesId:0:${1000 + seasonNum}"
-                val fallbackStreamsRes = apiClient.fetchStreams(st.serverUrl, st.token, type, combinedEpisodeId)
-                val fallbackStreams = fallbackStreamsRes.getOrDefault(emptyList())
-                if (fallbackStreams.isNotEmpty()) {
-                    val markedStreams = fallbackStreams.map { s ->
-                        s.copy(
-                            name = if (s.name != null) "${s.name} (S$seasonNum Combined Pack)" else "Season $seasonNum Combined"
-                        )
+                val epNum = parts[2].toIntOrNull() ?: 1
+
+                val fallbackCandidates = listOf(
+                    "$seriesId:0:${1000 + seasonNum}",
+                    "$seriesId:0:$seasonNum",
+                    "$seriesId:$seasonNum:0",
+                    "$seriesId:$seasonNum:$epNum"
+                )
+                for (candId in fallbackCandidates) {
+                    if (candId == id) continue
+                    val fallbackStreamsRes = apiClient.fetchStreams(st.serverUrl, st.token, type, candId)
+                    val fallbackStreams = fallbackStreamsRes.getOrDefault(emptyList())
+                    if (fallbackStreams.isNotEmpty()) {
+                        val markedStreams = fallbackStreams.map { s ->
+                            s.copy(
+                                name = if (s.name != null) "${s.name} (S$seasonNum Stream)" else "Season $seasonNum Stream"
+                            )
+                        }
+                        return Result.success(markedStreams)
                     }
-                    return Result.success(markedStreams)
                 }
             }
         }

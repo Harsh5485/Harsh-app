@@ -345,6 +345,11 @@ fun DownloadCardItem(
     onDelete: () -> Unit,
     modifier: Modifier = Modifier
 ) {
+    val configuration = androidx.compose.ui.platform.LocalConfiguration.current
+    val screenWidth = configuration.screenWidthDp.dp
+    val thumbWidth = (screenWidth * 0.18f).coerceIn(60.dp, 80.dp)
+    val thumbHeight = thumbWidth * 1.3f
+
     Card(
         shape = RoundedCornerShape(12.dp),
         colors = CardDefaults.cardColors(containerColor = NuvioCard),
@@ -367,8 +372,8 @@ fun DownloadCardItem(
                     // Poster / Quality Badge
                     Box(
                         modifier = Modifier
-                            .width(64.dp)
-                            .height(84.dp)
+                            .width(thumbWidth)
+                            .height(thumbHeight)
                             .clip(RoundedCornerShape(8.dp))
                             .background(NuvioSurfaceVariant)
                     ) {
@@ -393,20 +398,22 @@ fun DownloadCardItem(
                             }
                         }
 
-                        Surface(
-                            shape = RoundedCornerShape(4.dp),
-                            color = NuvioPrimary,
-                            modifier = Modifier
-                                .align(Alignment.TopStart)
-                                .padding(4.dp)
-                        ) {
-                            Text(
-                                text = task.quality,
-                                color = Color.Black,
-                                fontSize = 9.sp,
-                                fontWeight = FontWeight.ExtraBold,
-                                modifier = Modifier.padding(horizontal = 4.dp, vertical = 1.dp)
-                            )
+                        if (task.quality.isNotBlank()) {
+                            Surface(
+                                shape = RoundedCornerShape(2.dp),
+                                color = NuvioPrimary,
+                                modifier = Modifier
+                                    .align(Alignment.TopStart)
+                                    .padding(2.dp)
+                            ) {
+                                Text(
+                                    text = task.quality,
+                                    color = Color.Black,
+                                    fontSize = 4.sp,
+                                    fontWeight = FontWeight.Black,
+                                    modifier = Modifier.padding(horizontal = 1.5.dp, vertical = 0.2.dp)
+                                )
+                            }
                         }
                     }
 
@@ -416,7 +423,7 @@ fun DownloadCardItem(
                         Text(
                             text = task.title,
                             color = NuvioTextPrimary,
-                            fontSize = 14.sp,
+                            fontSize = 12.sp,
                             fontWeight = FontWeight.Bold,
                             maxLines = 2,
                             overflow = TextOverflow.Ellipsis
@@ -426,7 +433,7 @@ fun DownloadCardItem(
                             Text(
                                 text = task.subtitle,
                                 color = NuvioTextSecondary,
-                                fontSize = 11.sp,
+                                fontSize = 10.sp,
                                 maxLines = 1,
                                 overflow = TextOverflow.Ellipsis
                             )
@@ -468,7 +475,6 @@ fun DownloadCardItem(
             if (task.status == DownloadStatus.DOWNLOADING || task.status == DownloadStatus.PENDING || task.status == DownloadStatus.PAUSED) {
                 Row(
                     modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Text(
@@ -477,12 +483,38 @@ fun DownloadCardItem(
                         fontSize = 11.sp,
                         fontWeight = FontWeight.ExtraBold
                     )
+
+                    Spacer(modifier = Modifier.weight(1f))
+
+                    // Speed in the middle
+                    if (task.status == DownloadStatus.DOWNLOADING || task.status == DownloadStatus.PAUSED) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(
+                                imageVector = Icons.Default.Speed,
+                                contentDescription = null,
+                                tint = if (task.status == DownloadStatus.PAUSED) NuvioSecondary else NuvioPrimary,
+                                modifier = Modifier.size(12.dp)
+                            )
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text(
+                                text = task.formattedSpeed,
+                                color = if (task.status == DownloadStatus.PAUSED) NuvioSecondary else NuvioPrimary,
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.weight(1f))
+
                     if (task.formattedEta.isNotBlank()) {
                         Text(
                             text = task.formattedEta,
                             color = NuvioTextMuted,
                             fontSize = 10.sp
                         )
+                    } else {
+                        Spacer(modifier = Modifier.width(10.dp))
                     }
                 }
                 Spacer(modifier = Modifier.height(4.dp))
@@ -498,7 +530,7 @@ fun DownloadCardItem(
                 Spacer(modifier = Modifier.height(6.dp))
             }
 
-            // Stats row (Size, Speed, Action Buttons)
+            // Stats row (Size, Action Buttons)
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
@@ -511,32 +543,19 @@ fun DownloadCardItem(
                         fontSize = 12.sp,
                         fontWeight = FontWeight.Bold
                     )
-                    Spacer(modifier = Modifier.width(8.dp))
-                    Surface(
-                        shape = RoundedCornerShape(4.dp),
-                        color = when (task.status) {
-                            DownloadStatus.COMPLETED -> Color(0xFF1E3A1E)
-                            DownloadStatus.PAUSED -> NuvioSurfaceVariant
-                            else -> NuvioSurfaceVariant
-                        }
-                    ) {
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                    
+                    if (task.status == DownloadStatus.COMPLETED) {
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Surface(
+                            shape = RoundedCornerShape(4.dp),
+                            color = Color(0xFF1E3A1E)
                         ) {
-                            if (task.status == DownloadStatus.DOWNLOADING) {
-                                Icon(imageVector = Icons.Default.Speed, contentDescription = null, tint = NuvioPrimary, modifier = Modifier.size(12.dp))
-                                Spacer(modifier = Modifier.width(3.dp))
-                            }
                             Text(
-                                text = task.formattedSpeed,
-                                color = when (task.status) {
-                                    DownloadStatus.COMPLETED -> Color(0xFF4CAF50)
-                                    DownloadStatus.PAUSED -> NuvioSecondary
-                                    else -> NuvioPrimary
-                                },
-                                fontSize = 11.sp,
-                                fontWeight = FontWeight.Bold
+                                text = "DONE",
+                                color = Color(0xFF4CAF50),
+                                fontSize = 10.sp,
+                                fontWeight = FontWeight.Bold,
+                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
                             )
                         }
                     }
@@ -562,7 +581,7 @@ fun DownloadCardItem(
                                 modifier = Modifier.size(16.dp)
                             )
                         }
-                        Spacer(modifier = Modifier.width(6.dp))
+                        Spacer(modifier = Modifier.width(14.dp))
                     }
 
                     Button(
@@ -572,7 +591,7 @@ fun DownloadCardItem(
                             containerColor = NuvioPrimary,
                             contentColor = Color.Black
                         ),
-                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp),
+                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
                         modifier = Modifier.height(32.dp)
                     ) {
                         Icon(

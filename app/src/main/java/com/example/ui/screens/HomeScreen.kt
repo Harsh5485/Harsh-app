@@ -1,6 +1,6 @@
 package com.example.ui.screens
 
-import androidx.compose.foundation.background
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -47,11 +47,17 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.core.tween
+import androidx.compose.foundation.background
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import kotlinx.coroutines.delay
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.testTag
@@ -137,9 +143,9 @@ fun HomeScreen(
                         Text(
                             text = "HARSH",
                             color = NuvioTextPrimary,
-                            fontSize = 15.sp,
+                            fontSize = 14.sp,
                             fontWeight = FontWeight.ExtraBold,
-                            letterSpacing = 1.sp
+                            letterSpacing = 0.5.sp
                         )
                     }
 
@@ -219,100 +225,37 @@ fun HomeScreen(
                 }
             }
 
-            // Genre Selector Chips
+            // Genres
             item {
-                Column(modifier = Modifier.padding(top = 16.dp)) {
-                    Text(
-                        text = "Browse by Genre",
-                        color = NuvioTextSecondary,
-                        fontSize = 13.sp,
-                        fontWeight = FontWeight.SemiBold,
-                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp)
-                    )
-
-                    LazyRow(
-                        contentPadding = PaddingValues(horizontal = 16.dp),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        item {
-                            val isAllSelected = homeState.selectedGenre == null
-                            FilterChip(
-                                selected = isAllSelected,
-                                onClick = { viewModel.selectGenre(null) },
-                                label = {
-                                    Text(
-                                        text = "All",
-                                        fontWeight = if (isAllSelected) FontWeight.Bold else FontWeight.Normal,
-                                        fontSize = 12.sp
-                                    )
-                                },
-                                shape = RoundedCornerShape(20.dp),
-                                colors = FilterChipDefaults.filterChipColors(
-                                    selectedContainerColor = NuvioPrimary,
-                                    selectedLabelColor = Color.Black,
-                                    containerColor = NuvioSurfaceVariant,
-                                    labelColor = NuvioTextPrimary
-                                ),
-                                border = FilterChipDefaults.filterChipBorder(
-                                    enabled = true,
-                                    selected = isAllSelected,
-                                    borderColor = if (isAllSelected) NuvioPrimary else NuvioCardBorder
-                                )
-                            )
-                        }
-
-                        items(GENRES) { genre ->
-                            val isSelected = homeState.selectedGenre.equals(genre, ignoreCase = true)
-                            FilterChip(
-                                selected = isSelected,
-                                onClick = { viewModel.selectGenre(genre) },
-                                label = {
-                                    Text(
-                                        text = genre,
-                                        fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
-                                        fontSize = 12.sp
-                                    )
-                                },
-                                shape = RoundedCornerShape(20.dp),
-                                colors = FilterChipDefaults.filterChipColors(
-                                    selectedContainerColor = NuvioPrimary,
-                                    selectedLabelColor = Color.Black,
-                                    containerColor = NuvioSurfaceVariant,
-                                    labelColor = NuvioTextPrimary
-                                ),
-                                border = FilterChipDefaults.filterChipBorder(
-                                    enabled = true,
-                                    selected = isSelected,
-                                    borderColor = if (isSelected) NuvioPrimary else NuvioCardBorder
-                                )
-                            )
-                        }
-                    }
-                }
-            }
-
-            // Continue Watching Row (if any)
-            if (continueWatchingList.isNotEmpty()) {
-                item {
-                    Spacer(modifier = Modifier.height(16.dp))
-                    Column(modifier = Modifier.fillMaxWidth()) {
+                AnimatedVisibility(
+                    visible = true,
+                    enter = fadeIn(tween(1000)) + slideInVertically(tween(1000)) { 20 }
+                ) {
+                    Column(modifier = Modifier.padding(top = 16.dp)) {
                         Text(
-                            text = "Continue Watching",
+                            text = "Explore Genres",
                             color = NuvioTextPrimary,
-                            fontSize = 18.sp,
+                            fontSize = 16.sp,
                             fontWeight = FontWeight.Bold,
                             modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)
                         )
 
                         LazyRow(
                             contentPadding = PaddingValues(horizontal = 16.dp),
-                            horizontalArrangement = Arrangement.spacedBy(12.dp)
+                            horizontalArrangement = Arrangement.spacedBy(10.dp)
                         ) {
-                            items(continueWatchingList, key = { it.id }) { item ->
-                                ContinueWatchingCard(
-                                    item = item,
-                                    onClick = { viewModel.resumeHistoryItem(item) }
+                            item {
+                                GenreChip(
+                                    label = "All",
+                                    isSelected = homeState.selectedGenre == null,
+                                    onClick = { viewModel.selectGenre(null) }
+                                )
+                            }
+                            items(GENRES) { genre ->
+                                GenreChip(
+                                    label = genre,
+                                    isSelected = homeState.selectedGenre.equals(genre, ignoreCase = true),
+                                    onClick = { viewModel.selectGenre(genre) }
                                 )
                             }
                         }
@@ -320,62 +263,54 @@ fun HomeScreen(
                 }
             }
 
-            // Loading Indicator
-            if (homeState.isLoading) {
+            // Staggered sections
+            val sections = listOf(
+                "Latest Releases" to homeState.latestMovies,
+                "Trending Movies" to homeState.popularMovies,
+                "Binge-Worthy Series" to homeState.latestSeries,
+                "All-Time Popular" to homeState.popularSeries
+            )
+
+            sections.forEachIndexed { index, (title, items) ->
                 item {
-                    Box(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(40.dp),
-                        contentAlignment = Alignment.Center
+                    AnimatedVisibility(
+                        visible = true,
+                        enter = fadeIn(tween(600, delayMillis = 200 * index)) + 
+                                slideInVertically(tween(600, delayMillis = 200 * index)) { 50 }
                     ) {
-                        CircularProgressIndicator(
-                            color = NuvioPrimary,
-                            modifier = Modifier.size(36.dp)
+                        Spacer(modifier = Modifier.height(24.dp))
+                        MediaSectionRow(
+                            title = title,
+                            items = items,
+                            onItemClick = onMediaClick
                         )
                     }
                 }
             }
-
-            // Latest Movies
-            item {
-                Spacer(modifier = Modifier.height(12.dp))
-                MediaSectionRow(
-                    title = "Latest Movies",
-                    items = homeState.latestMovies,
-                    onItemClick = onMediaClick
-                )
-            }
-
-            // Popular Movies
-            item {
-                Spacer(modifier = Modifier.height(16.dp))
-                MediaSectionRow(
-                    title = "Popular Movies",
-                    items = homeState.popularMovies,
-                    onItemClick = onMediaClick
-                )
-            }
-
-            // Latest TV Series
-            item {
-                Spacer(modifier = Modifier.height(16.dp))
-                MediaSectionRow(
-                    title = "Latest Series",
-                    items = homeState.latestSeries,
-                    onItemClick = onMediaClick
-                )
-            }
-
-            // Popular TV Series
-            item {
-                Spacer(modifier = Modifier.height(16.dp))
-                MediaSectionRow(
-                    title = "Popular Series",
-                    items = homeState.popularSeries,
-                    onItemClick = onMediaClick
-                )
-            }
         }
+    }
+}
+
+@Composable
+fun GenreChip(
+    label: String,
+    isSelected: Boolean,
+    onClick: () -> Unit
+) {
+    Surface(
+        modifier = Modifier
+            .clip(RoundedCornerShape(12.dp))
+            .clickable(onClick = onClick),
+        color = if (isSelected) NuvioPrimary else NuvioSurfaceVariant,
+        shape = RoundedCornerShape(12.dp),
+        border = if (!isSelected) BorderStroke(1.dp, NuvioCardBorder) else null
+    ) {
+        Text(
+            text = label,
+            color = if (isSelected) Color.Black else NuvioTextPrimary,
+            fontSize = 13.sp,
+            fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
+            modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)
+        )
     }
 }

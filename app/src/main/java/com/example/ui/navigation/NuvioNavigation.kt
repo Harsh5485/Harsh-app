@@ -38,6 +38,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.data.model.MediaItem
@@ -101,6 +102,7 @@ fun NuvioMainApp(viewModel: NuvioViewModel) {
             playbackState = playerPlayback!!,
             onBackClick = { viewModel.closePlayer() },
             onSaveProgress = { pos, dur -> viewModel.saveProgress(pos, dur) },
+            onNextClick = { viewModel.playNextEpisode() },
             onSwitchStream = { newStream -> viewModel.switchPlayerStream(newStream) }
         )
         return
@@ -142,8 +144,11 @@ fun NuvioMainApp(viewModel: NuvioViewModel) {
                             label = {
                                 Text(
                                     text = tab.title,
-                                    fontSize = 11.sp,
-                                    fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal
+                                    fontSize = 8.5.sp,
+                                    fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
+                                    maxLines = 1,
+                                    softWrap = false,
+                                    overflow = TextOverflow.Visible
                                 )
                             },
                             colors = NavigationBarItemDefaults.colors(

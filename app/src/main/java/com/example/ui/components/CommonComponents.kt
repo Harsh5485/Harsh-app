@@ -60,6 +60,12 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.material3.IconButton
+import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.spring
+import androidx.compose.foundation.interaction.collectIsPressedAsState
+import androidx.compose.runtime.remember
+import androidx.compose.ui.graphics.graphicsLayer
 import coil.compose.AsyncImage
 import com.example.data.local.WatchHistoryEntity
 import com.example.data.model.MediaItem
@@ -95,31 +101,50 @@ fun MediaPosterCard(
     onClick: () -> Unit,
     modifier: Modifier = Modifier
 ) {
+    val configuration = androidx.compose.ui.platform.LocalConfiguration.current
+    val isSmallScreen = configuration.screenWidthDp < 360
+    val cardWidth = if (isSmallScreen) 105.dp else 125.dp
+    
+    val interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() }
+    val isPressed by interactionSource.collectIsPressedAsState()
+    val scale by androidx.compose.animation.core.animateFloatAsState(
+        targetValue = if (isPressed) 0.98f else 1f,
+        animationSpec = spring(dampingRatio = Spring.DampingRatioLowBouncy, stiffness = Spring.StiffnessLow),
+        label = "scale"
+    )
+
     Card(
         modifier = modifier
-            .width(130.dp)
-            .aspectRatio(2f / 3f)
-            .clip(RoundedCornerShape(10.dp))
-            .border(1.dp, NuvioCardBorder, RoundedCornerShape(10.dp))
-            .clickable(onClick = onClick)
+            .width(cardWidth)
+            .aspectRatio(2f / 3.1f)
+            .graphicsLayer {
+                scaleX = scale
+                scaleY = scale
+            }
+            .clip(RoundedCornerShape(8.dp))
+            .border(
+                width = 0.5.dp,
+                brush = Brush.verticalGradient(
+                    colors = listOf(NuvioCardBorder.copy(alpha = 0.4f), Color.Transparent, NuvioCardBorder.copy(alpha = 0.15f))
+                ),
+                shape = RoundedCornerShape(8.dp)
+            )
+            .clickable(
+                interactionSource = interactionSource,
+                indication = androidx.compose.foundation.LocalIndication.current,
+                onClick = onClick
+            )
             .testTag("media_card_${item.id}"),
         shape = RoundedCornerShape(10.dp),
-        colors = CardDefaults.cardColors(containerColor = NuvioCard)
+        colors = CardDefaults.cardColors(containerColor = NuvioCard),
+        elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
     ) {
         Box(modifier = Modifier.fillMaxSize()) {
-            // Smooth Shimmer/Gradient Background Placeholder to prevent black box during poster scroll
+            // Placeholder
             Box(
                 modifier = Modifier
                     .fillMaxSize()
-                    .background(
-                        Brush.linearGradient(
-                            colors = listOf(
-                                Color(0xFF1C2232),
-                                Color(0xFF121622),
-                                Color(0xFF1C2232)
-                            )
-                        )
-                    )
+                    .background(Brush.linearGradient(colors = listOf(Color(0xFF0F172A), Color(0xFF1E293B))))
             )
 
             AsyncImage(
@@ -132,99 +157,71 @@ fun MediaPosterCard(
                 modifier = Modifier.fillMaxSize()
             )
 
-            // Gradient at bottom for title contrast
+            // Dynamic vignette
             Box(
                 modifier = Modifier
                     .fillMaxSize()
                     .background(
                         Brush.verticalGradient(
-                            colors = listOf(
-                                Color.Transparent,
-                                Color.Transparent,
-                                NuvioBackground.copy(alpha = 0.85f),
-                                NuvioBackground
-                            )
+                            listOf(Color.Transparent, Color.Black.copy(alpha = 0.3f), Color.Black.copy(alpha = 0.9f))
                         )
                     )
             )
 
-            // Rating & Type Badges at top
+            // Labels
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(4.dp),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
+                horizontalArrangement = Arrangement.SpaceBetween
             ) {
                 val formattedRating = formatRating(item.imdbRating)
                 if (!formattedRating.isNullOrBlank()) {
                     Surface(
-                        shape = RoundedCornerShape(4.dp),
-                        color = Color.Black.copy(alpha = 0.8f),
-                        modifier = Modifier.border(0.5.dp, NuvioGold.copy(alpha = 0.7f), RoundedCornerShape(4.dp))
+                        shape = RoundedCornerShape(3.dp),
+                        color = Color.Black.copy(alpha = 0.75f),
+                        modifier = Modifier.border(0.4.dp, NuvioGold.copy(alpha = 0.3f), RoundedCornerShape(3.dp))
                     ) {
                         Row(
                             verticalAlignment = Alignment.CenterVertically,
-                            modifier = Modifier.padding(horizontal = 4.dp, vertical = 1.dp)
+                            modifier = Modifier.padding(horizontal = 3.dp, vertical = 1.dp)
                         ) {
-                            Icon(
-                                imageVector = Icons.Default.Star,
-                                contentDescription = null,
-                                tint = NuvioGold,
-                                modifier = Modifier.size(8.dp)
-                            )
-                            Spacer(modifier = Modifier.width(2.dp))
-                            Text(
-                                text = formattedRating,
-                                color = NuvioGold,
-                                fontSize = 8.sp,
-                                fontWeight = FontWeight.Bold
-                            )
+                            Icon(Icons.Default.Star, null, tint = NuvioGold, modifier = Modifier.size(7.dp))
+                            Spacer(Modifier.width(2.dp))
+                            Text(formattedRating, color = NuvioGold, fontSize = 7.sp, fontWeight = FontWeight.Bold)
                         }
                     }
-                } else {
-                    Spacer(modifier = Modifier.size(1.dp))
                 }
 
-                Surface(
-                    shape = RoundedCornerShape(4.dp),
-                    color = NuvioPrimary.copy(alpha = 0.9f)
-                ) {
-                    Text(
-                        text = if (item.type.equals("series", true)) "SERIES" else "MOVIE",
-                        color = Color.Black,
-                        fontSize = 7.sp,
-                        fontWeight = FontWeight.ExtraBold,
-                        modifier = Modifier.padding(horizontal = 4.dp, vertical = 1.dp)
-                    )
+                val yearText = item.year ?: item.releaseInfo
+                if (!yearText.isNullOrBlank()) {
+                    Surface(
+                        shape = RoundedCornerShape(3.dp),
+                        color = NuvioPrimary.copy(alpha = 0.9f)
+                    ) {
+                        Text(
+                            text = yearText.trim().take(4),
+                            color = Color.Black,
+                            fontSize = 6.sp,
+                            fontWeight = FontWeight.Black,
+                            modifier = Modifier.padding(horizontal = 2.5.dp, vertical = 0.5.dp)
+                        )
+                    }
                 }
             }
 
-            // Title & Year info at bottom - Full Title visible on 2 lines
-            Column(
+            Text(
+                text = item.name,
+                color = Color.White,
+                fontSize = 8.sp,
+                fontWeight = FontWeight.Bold,
+                maxLines = 2,
+                lineHeight = 9.5.sp,
+                overflow = TextOverflow.Ellipsis,
                 modifier = Modifier
                     .align(Alignment.BottomStart)
-                    .padding(5.dp)
-            ) {
-                Text(
-                    text = item.name,
-                    color = NuvioTextPrimary,
-                    fontSize = 11.sp,
-                    lineHeight = 13.sp,
-                    fontWeight = FontWeight.Bold,
-                    maxLines = 2,
-                    overflow = TextOverflow.Ellipsis
-                )
-                val subtitle = item.year ?: item.releaseInfo ?: item.genres?.firstOrNull() ?: ""
-                if (subtitle.isNotBlank()) {
-                    Text(
-                        text = subtitle,
-                        color = NuvioTextSecondary,
-                        fontSize = 9.sp,
-                        maxLines = 1
-                    )
-                }
-            }
+                    .padding(6.dp)
+            )
         }
     }
 }
@@ -236,13 +233,16 @@ fun HeroBanner(
     onDetailClick: () -> Unit,
     modifier: Modifier = Modifier
 ) {
+    val configuration = androidx.compose.ui.platform.LocalConfiguration.current
+    val screenHeight = configuration.screenHeightDp.dp
+    val bannerHeight = (screenHeight * 0.5f).coerceAtMost(420.dp).coerceAtLeast(300.dp)
+
     Box(
         modifier = modifier
             .fillMaxWidth()
-            .height(320.dp)
+            .height(bannerHeight)
             .testTag("hero_banner")
     ) {
-        // High-res backdrop image
         AsyncImage(
             model = item.background ?: item.poster,
             contentDescription = item.name,
@@ -250,15 +250,16 @@ fun HeroBanner(
             modifier = Modifier.fillMaxSize()
         )
 
-        // Vignette gradients (top, sides, bottom)
+        // Multi-layered gradient for depth
         Box(
             modifier = Modifier
                 .fillMaxSize()
                 .background(
                     Brush.verticalGradient(
                         colors = listOf(
-                            NuvioBackground.copy(alpha = 0.5f),
+                            Color.Black.copy(alpha = 0.4f),
                             Color.Transparent,
+                            Color.Black.copy(alpha = 0.2f),
                             NuvioBackground.copy(alpha = 0.8f),
                             NuvioBackground
                         )
@@ -266,142 +267,96 @@ fun HeroBanner(
                 )
         )
 
-        // Hero Info Overlay
         Column(
             modifier = Modifier
                 .align(Alignment.BottomStart)
                 .fillMaxWidth()
-                .padding(horizontal = 20.dp, vertical = 20.dp)
+                .padding(horizontal = 24.dp, vertical = 32.dp)
         ) {
-            // Genre and Type tag
+            // Badges
             Row(
                 verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                horizontalArrangement = Arrangement.spacedBy(10.dp)
             ) {
                 Surface(
-                    shape = RoundedCornerShape(6.dp),
+                    shape = RoundedCornerShape(8.dp),
                     color = NuvioPrimary,
-                    modifier = Modifier.padding(vertical = 2.dp)
                 ) {
                     Text(
-                        text = if (item.type.equals("series", true)) "SERIES" else "FEATURE FILM",
+                        text = if (item.type.equals("series", true)) "SERIES" else "MOVIE",
                         color = Color.Black,
-                        fontSize = 10.sp,
+                        fontSize = 11.sp,
                         fontWeight = FontWeight.ExtraBold,
-                        modifier = Modifier.padding(horizontal = 7.dp, vertical = 3.dp)
+                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
                     )
                 }
 
-                val formattedHeroRating = formatRating(item.imdbRating)
-                if (!formattedHeroRating.isNullOrBlank()) {
+                val rating = formatRating(item.imdbRating)
+                if (rating != null) {
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
                         modifier = Modifier
-                            .background(Color.Black.copy(alpha = 0.6f), RoundedCornerShape(6.dp))
-                            .padding(horizontal = 6.dp, vertical = 3.dp)
+                            .background(Color.Black.copy(alpha = 0.5f), RoundedCornerShape(8.dp))
+                            .padding(horizontal = 8.dp, vertical = 4.dp)
                     ) {
-                        Icon(
-                            imageVector = Icons.Default.Star,
-                            contentDescription = null,
-                            tint = NuvioGold,
-                            modifier = Modifier.size(13.dp)
-                        )
-                        Spacer(modifier = Modifier.width(4.dp))
-                        Text(
-                            text = formattedHeroRating,
-                            color = NuvioTextPrimary,
-                            fontSize = 11.sp,
-                            fontWeight = FontWeight.Bold
-                        )
+                        Icon(Icons.Default.Star, null, tint = NuvioGold, modifier = Modifier.size(14.dp))
+                        Spacer(Modifier.width(4.dp))
+                        Text(rating, color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Bold)
                     }
-                }
-
-                if (!item.year.isNullOrBlank()) {
-                    Text(
-                        text = item.year,
-                        color = NuvioTextSecondary,
-                        fontSize = 12.sp,
-                        fontWeight = FontWeight.Medium
-                    )
                 }
             }
 
-            Spacer(modifier = Modifier.height(8.dp))
+            Spacer(Modifier.height(12.dp))
 
-            // Main Title
             Text(
-                text = item.name,
-                color = NuvioTextPrimary,
-                fontSize = 26.sp,
-                fontWeight = FontWeight.ExtraBold,
-                lineHeight = 32.sp,
+                text = item.name.uppercase(),
+                color = Color.White,
+                fontSize = 22.sp,
+                fontWeight = FontWeight.Black,
+                lineHeight = 28.sp,
+                letterSpacing = (-0.8).sp,
                 maxLines = 2,
                 overflow = TextOverflow.Ellipsis
             )
 
-            // Synopsis preview
             if (!item.description.isNullOrBlank()) {
-                Spacer(modifier = Modifier.height(6.dp))
+                Spacer(Modifier.height(8.dp))
                 Text(
                     text = item.description,
-                    color = NuvioTextSecondary,
-                    fontSize = 12.sp,
+                    color = Color.White.copy(alpha = 0.8f),
+                    fontSize = 13.sp,
                     maxLines = 2,
+                    lineHeight = 18.sp,
                     overflow = TextOverflow.Ellipsis,
-                    lineHeight = 16.sp
+                    modifier = Modifier.fillMaxWidth(0.9f)
                 )
             }
 
-            Spacer(modifier = Modifier.height(16.dp))
+            Spacer(Modifier.height(24.dp))
 
-            // Action Buttons
             Row(
                 modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(12.dp)
+                horizontalArrangement = Arrangement.spacedBy(16.dp)
             ) {
                 Button(
                     onClick = onPlayClick,
                     shape = RoundedCornerShape(12.dp),
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = NuvioPrimary,
-                        contentColor = Color.Black
-                    ),
-                    modifier = Modifier
-                        .weight(1f)
-                        .height(48.dp)
-                        .testTag("hero_play_button")
+                    colors = ButtonDefaults.buttonColors(containerColor = Color.White, contentColor = Color.Black),
+                    modifier = Modifier.weight(1f).height(48.dp)
                 ) {
-                    Icon(
-                        imageVector = Icons.Default.PlayArrow,
-                        contentDescription = null,
-                        modifier = Modifier.size(20.dp)
-                    )
-                    Spacer(modifier = Modifier.width(6.dp))
-                    Text(
-                        text = "Play",
-                        fontSize = 14.sp,
-                        fontWeight = FontWeight.Bold
-                    )
+                    Icon(Icons.Default.PlayArrow, null, modifier = Modifier.size(20.dp))
+                    Spacer(Modifier.width(6.dp))
+                    Text("Watch Now", fontWeight = FontWeight.ExtraBold, fontSize = 14.sp)
                 }
 
-                OutlinedButton(
+                IconButton(
                     onClick = onDetailClick,
-                    shape = RoundedCornerShape(12.dp),
-                    colors = ButtonDefaults.outlinedButtonColors(
-                        contentColor = NuvioTextPrimary
-                    ),
-                    border = ButtonDefaults.outlinedButtonBorder(enabled = true).copy(
-                        brush = Brush.horizontalGradient(listOf(NuvioCardBorder, NuvioTextSecondary))
-                    ),
                     modifier = Modifier
-                        .height(48.dp)
-                        .testTag("hero_detail_button")
+                        .size(48.dp)
+                        .background(Color.White.copy(alpha = 0.2f), RoundedCornerShape(12.dp))
+                        .border(1.dp, Color.White.copy(alpha = 0.3f), RoundedCornerShape(12.dp))
                 ) {
-                    Text(
-                        text = "Details",
-                        fontSize = 14.sp,
-                        fontWeight = FontWeight.SemiBold
-                    )
+                    Icon(Icons.AutoMirrored.Filled.ArrowForward, null, tint = Color.White)
                 }
             }
         }
@@ -414,9 +369,14 @@ fun ContinueWatchingCard(
     onClick: () -> Unit,
     modifier: Modifier = Modifier
 ) {
+    val configuration = androidx.compose.ui.platform.LocalConfiguration.current
+    val screenWidth = configuration.screenWidthDp.dp
+    val cardWidth = (screenWidth * 0.5f).coerceIn(160.dp, 220.dp)
+    val thumbHeight = cardWidth * 0.56f
+
     Card(
         modifier = modifier
-            .width(220.dp)
+            .width(cardWidth)
             .clip(RoundedCornerShape(12.dp))
             .border(1.dp, NuvioCardBorder, RoundedCornerShape(12.dp))
             .clickable(onClick = onClick)
@@ -428,7 +388,7 @@ fun ContinueWatchingCard(
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(115.dp)
+                    .height(thumbHeight)
             ) {
                 AsyncImage(
                     model = item.backdrop ?: item.poster,
@@ -474,9 +434,10 @@ fun ContinueWatchingCard(
                 Text(
                     text = item.title,
                     color = NuvioTextPrimary,
-                    fontSize = 13.sp,
+                    fontSize = 12.sp,
                     fontWeight = FontWeight.Bold,
-                    maxLines = 1,
+                    maxLines = 2,
+                    lineHeight = 15.sp,
                     overflow = TextOverflow.Ellipsis
                 )
                 val epText = if (item.season != null && item.episode != null) {
@@ -509,26 +470,30 @@ fun MediaSectionRow(
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 16.dp, vertical = 8.dp),
+                .padding(horizontal = 20.dp, vertical = 12.dp),
             horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically
+            verticalAlignment = Alignment.Bottom
         ) {
             Text(
                 text = title,
-                color = NuvioTextPrimary,
-                fontSize = 18.sp,
-                fontWeight = FontWeight.Bold
+                color = Color.White,
+                fontSize = 17.sp,
+                fontWeight = FontWeight.ExtraBold,
+                letterSpacing = (-0.4).sp
             )
+            
             Text(
-                text = "${items.size} titles",
-                color = NuvioTextMuted,
-                fontSize = 12.sp
+                text = "See All",
+                color = NuvioPrimary,
+                fontSize = 12.sp,
+                fontWeight = FontWeight.Bold,
+                modifier = Modifier.clickable { /* Future implement */ }.padding(4.dp)
             )
         }
 
         LazyRow(
-            contentPadding = PaddingValues(horizontal = 16.dp),
-            horizontalArrangement = Arrangement.spacedBy(12.dp)
+            contentPadding = PaddingValues(horizontal = 20.dp),
+            horizontalArrangement = Arrangement.spacedBy(14.dp)
         ) {
             items(items, key = { it.id }) { item ->
                 MediaPosterCard(
@@ -587,7 +552,7 @@ fun ServerStatusBadge(
             Text(
                 text = if (isConnected) "Server: $tokenName" else "Connecting...",
                 color = NuvioTextPrimary,
-                fontSize = 10.sp,
+                fontSize = 9.sp,
                 fontWeight = FontWeight.SemiBold
             )
         }

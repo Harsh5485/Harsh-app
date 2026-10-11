@@ -303,10 +303,15 @@ fun HistoryItemCard(
             verticalAlignment = Alignment.CenterVertically
         ) {
             // Thumbnail with progress
+            val configuration = androidx.compose.ui.platform.LocalConfiguration.current
+            val screenWidth = configuration.screenWidthDp.dp
+            val historyThumbWidth = (screenWidth * 0.25f).coerceIn(90.dp, 120.dp)
+            val historyThumbHeight = historyThumbWidth * 0.65f
+
             Box(
                 modifier = Modifier
-                    .width(100.dp)
-                    .height(65.dp)
+                    .width(historyThumbWidth)
+                    .height(historyThumbHeight)
                     .clip(RoundedCornerShape(8.dp))
                     .background(NuvioSurfaceVariant)
             ) {

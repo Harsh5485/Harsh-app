@@ -51,7 +51,8 @@ private fun isCombinedStreamItem(stream: StreamItem): Boolean {
            title.contains("[E01-", ignoreCase = true) ||
            title.contains("E01-E", ignoreCase = true) ||
            fn.contains("COMBINED", ignoreCase = true) ||
-           fn.contains("[E01-", ignoreCase = true)
+           fn.contains("[E01-", ignoreCase = true) ||
+           fn.contains("Full Season", ignoreCase = true)
 }
 
 data class DetailUiState(
@@ -65,8 +66,10 @@ data class DetailUiState(
     val isViewingCombinedTab: Boolean = false,
     val isSeasonCombinedOnly: Boolean = false,
     val streams: List<StreamItem> = emptyList(),
+    val episodeStreams: List<StreamItem> = emptyList(),
     val isLoadingMeta: Boolean = false,
     val isLoadingStreams: Boolean = false,
+    val isLoadingEpisodeStreams: Boolean = false,
     val isInWatchlist: Boolean = false,
     val streamErrorMessage: String? = null
 )
@@ -82,7 +85,8 @@ data class PlayerPlaybackState(
     val episodeTitle: String? = null,
     val streamItem: StreamItem? = null,
     val availableStreams: List<StreamItem> = emptyList(),
-    val initialPositionMs: Long = 0L
+    val initialPositionMs: Long = 0L,
+    val nextEpisode: VideoEpisode? = null
 )
 
 class NuvioViewModel(application: Application) : AndroidViewModel(application) {
@@ -230,18 +234,24 @@ class NuvioViewModel(application: Application) : AndroidViewModel(application) {
             val standardList = videos.filter { !it.isCombined }
 
             val seasons = if (standardList.isNotEmpty()) {
-                standardList.mapNotNull { it.season }.filter { it > 0 }.distinct().sorted()
+                standardList.mapNotNull { it.season }.filter { it >= 0 }.distinct().sorted()
             } else if (videos.isNotEmpty()) {
-                videos.mapNotNull { it.season }.filter { it > 0 }.distinct().sorted()
+                videos.mapNotNull { it.season }.filter { it >= 0 }.distinct().sorted()
             } else {
                 emptyList()
             }
+            
+            // Filter seasons that have actual episodes available on server
+            val activeSeasons = seasons.filter { s -> 
+                videos.any { it.season == s && it.hasServerFile }
+            }
 
-            val defaultSeason = seasons.firstOrNull() ?: 1
+            val defaultSeason = activeSeasons.firstOrNull() ?: 1
             val singleEps = standardList.filter { it.season == defaultSeason }
             val seasonEpisodes = if (singleEps.isNotEmpty()) singleEps else emptyList()
-            val initialEpisode = singleEps.firstOrNull()
+            val initialEpisode = singleEps.firstOrNull { it.hasServerFile }
                 ?: combinedList.firstOrNull { it.season == defaultSeason }
+                ?: singleEps.firstOrNull()
                 ?: videos.firstOrNull { it.season == defaultSeason }
 
             val isInitialCombined = combinedList.isNotEmpty() && standardList.isEmpty()
@@ -249,10 +259,10 @@ class NuvioViewModel(application: Application) : AndroidViewModel(application) {
             _detailState.update {
                 it.copy(
                     metaDetail = detail,
-                    seasons = seasons,
+                    seasons = activeSeasons,
                     selectedSeason = defaultSeason,
                     seasonEpisodes = seasonEpisodes,
-                    combinedFiles = combinedList,
+                    combinedFiles = combinedList.filter { it.season == defaultSeason },
                     selectedEpisode = initialEpisode,
                     isViewingCombinedTab = false,
                     isSeasonCombinedOnly = isInitialCombined,
@@ -274,15 +284,20 @@ class NuvioViewModel(application: Application) : AndroidViewModel(application) {
     fun selectSeason(season: Int) {
         val videos = _detailState.value.metaDetail?.videos ?: emptyList()
         val standardList = videos.filter { !it.isCombined }
+        val combinedList = videos.filter { it.isCombined }
+        
         val singleEps = standardList.filter { it.season == season }
+        val combinedEps = combinedList.filter { it.season == season }
+        
         val epToSelect = singleEps.firstOrNull()
-            ?: videos.firstOrNull { it.season == season && it.isCombined }
+            ?: combinedEps.firstOrNull()
             ?: videos.firstOrNull { it.season == season }
 
         _detailState.update {
             it.copy(
                 selectedSeason = season,
                 seasonEpisodes = singleEps,
+                combinedFiles = combinedEps,
                 selectedEpisode = epToSelect,
                 isViewingCombinedTab = false
             )
@@ -372,17 +387,59 @@ class NuvioViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    fun loadEpisodeStreams(video: VideoEpisode) {
+        viewModelScope.launch {
+            _detailState.update { it.copy(selectedEpisode = video, isLoadingEpisodeStreams = true, episodeStreams = emptyList()) }
+            val result = repository.getStreams(video.id, "series")
+            result.onSuccess { list ->
+                _detailState.update { it.copy(episodeStreams = list, isLoadingEpisodeStreams = false) }
+            }.onFailure {
+                _detailState.update { it.copy(isLoadingEpisodeStreams = false) }
+            }
+        }
+    }
+
+    private fun getNextEpisode(current: VideoEpisode?): VideoEpisode? {
+        if (current == null) return null
+        val videos = _detailState.value.metaDetail?.videos ?: return null
+        
+        // Prefer episodes that actually have server files
+        val serverList = videos.filter { !it.isCombined && it.hasServerFile }
+        val listToUse = if (serverList.isNotEmpty()) serverList else videos.filter { !it.isCombined }
+        
+        var index = listToUse.indexOfFirst { it.id == current.id }
+        if (index == -1 && current.season != null && current.episode != null) {
+            index = listToUse.indexOfFirst { it.season == current.season && it.episode == current.episode }
+        }
+        if (index != -1 && index < listToUse.size - 1) {
+            return listToUse[index + 1]
+        }
+        // Fallback by sequential episode number
+        if (current.season != null && current.episode != null) {
+            val nextInSameSeason = listToUse.firstOrNull { it.season == current.season && (it.episode ?: 0) == (current.episode ?: 0) + 1 }
+            if (nextInSameSeason != null) return nextInSameSeason
+            val nextInNextSeason = listToUse.firstOrNull { (it.season ?: 0) == (current.season ?: 0) + 1 && (it.episode ?: 0) == 1 }
+            if (nextInNextSeason != null) return nextInNextSeason
+        }
+        return null
+    }
+
     fun playStream(
         item: MediaItem,
         streamItem: StreamItem,
         availableStreams: List<StreamItem> = emptyList(),
         season: Int? = null,
         episode: Int? = null,
-        episodeTitle: String? = null
+        episodeTitle: String? = null,
+        videoEpisode: VideoEpisode? = null
     ) {
         viewModelScope.launch {
             val lastPos = repository.getLastWatchPosition(item.id, season, episode)
             val streamsToPass = if (availableStreams.isNotEmpty()) availableStreams else _detailState.value.streams
+            
+            val nextEp = videoEpisode ?: _detailState.value.selectedEpisode
+            val next = getNextEpisode(nextEp)
+
             _playerPlayback.value = PlayerPlaybackState(
                 mediaId = item.id,
                 title = item.name,
@@ -394,8 +451,66 @@ class NuvioViewModel(application: Application) : AndroidViewModel(application) {
                 episodeTitle = episodeTitle,
                 streamItem = streamItem,
                 availableStreams = streamsToPass,
-                initialPositionMs = lastPos
+                initialPositionMs = lastPos,
+                nextEpisode = next
             )
+        }
+    }
+
+    fun playNextEpisode() {
+        val current = _playerPlayback.value ?: return
+        val next = current.nextEpisode ?: return
+        val mediaItem = _detailState.value.mediaItem ?: return
+        
+        viewModelScope.launch {
+            // We don't set to null here to prevent orientation glitch/rotation back-and-forth
+            // The PlayerScreen will handle the transition once the next episode's stream is loaded
+            
+            // Auto-load streams for next episode and play first one
+            val targetId = if (next.id.isNotBlank() && next.id.contains(":")) {
+                next.id
+            } else {
+                "${mediaItem.id}:${next.season ?: 1}:${next.episode ?: 1}"
+            }
+            var streams = repository.getStreams(targetId, "series").getOrDefault(emptyList())
+            
+            // If primary targetId returned empty, also try direct next.id if different
+            if (streams.isEmpty() && next.id.isNotBlank() && next.id != targetId) {
+                streams = repository.getStreams(next.id, "series").getOrDefault(emptyList())
+            }
+            
+            val first = streams.firstOrNull()
+            if (first != null) {
+                _detailState.update { it.copy(selectedEpisode = next) }
+                playStream(
+                    item = mediaItem,
+                    streamItem = first,
+                    availableStreams = streams,
+                    season = next.season,
+                    episode = next.episode,
+                    episodeTitle = next.title,
+                    videoEpisode = next
+                )
+            } else {
+                // If no separate stream found on server, fallback to current available streams (for season pack files)
+                val fallbackStream = current.availableStreams.firstOrNull()
+                if (fallbackStream != null) {
+                    _detailState.update { it.copy(selectedEpisode = next) }
+                    playStream(
+                        item = mediaItem,
+                        streamItem = fallbackStream,
+                        availableStreams = current.availableStreams,
+                        season = next.season,
+                        episode = next.episode,
+                        episodeTitle = next.title,
+                        videoEpisode = next
+                    )
+                } else {
+                    // If truly no streams, close player and notify user
+                    _playerPlayback.value = null
+                    android.widget.Toast.makeText(getApplication(), "No streams found for next episode", android.widget.Toast.LENGTH_SHORT).show()
+                }
+            }
         }
     }
 

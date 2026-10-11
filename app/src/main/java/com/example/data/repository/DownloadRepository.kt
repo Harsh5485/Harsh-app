@@ -262,7 +262,7 @@ class DownloadRepository(private val context: Context) {
             subtitle = "Direct Link Download",
             poster = null,
             streamUrl = cleanUrl,
-            quality = "HD",
+            quality = "Video",
             rawFileName = derivedName
         )
     }
@@ -471,6 +471,10 @@ class DownloadRepository(private val context: Context) {
                     updateSystemNotification(failedTask)
                 }
             } catch (e: Exception) {
+                if (e is kotlinx.coroutines.CancellationException) {
+                    // Normal cancellation (pause/delete), do not log as error or mark as failed
+                    return@launch
+                }
                 Log.e("DownloadRepository", "Turbo downloader exception", e)
                 val failedTask = task.copy(status = DownloadStatus.FAILED, downloadSpeedBytesPerSec = 0L)
                 _downloads.value = _downloads.value.map {

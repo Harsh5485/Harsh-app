@@ -23,6 +23,8 @@ import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.scaleIn
 import androidx.compose.animation.scaleOut
+import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -77,6 +79,8 @@ import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material.icons.filled.VideoLibrary
 import androidx.compose.material.icons.automirrored.filled.VolumeOff
 import androidx.compose.material.icons.automirrored.filled.VolumeUp
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
@@ -101,6 +105,7 @@ import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -181,6 +186,7 @@ fun PlayerScreen(
     playbackState: PlayerPlaybackState,
     onBackClick: () -> Unit,
     onSaveProgress: (positionMs: Long, durationMs: Long) -> Unit,
+    onNextClick: (() -> Unit)? = null,
     onSwitchStream: ((StreamItem) -> Unit)? = null,
     modifier: Modifier = Modifier
 ) {
@@ -188,10 +194,15 @@ fun PlayerScreen(
     val activity = context as? Activity
     val scope = rememberCoroutineScope()
 
-    var activeStreamItem by remember(playbackState.streamItem) {
+    val currentPlaybackState by rememberUpdatedState(playbackState)
+    val currentOnNextClick by rememberUpdatedState(onNextClick)
+    val currentOnSaveProgress by rememberUpdatedState(onSaveProgress)
+    val currentOnBackClick by rememberUpdatedState(onBackClick)
+
+    var activeStreamItem by remember(playbackState.mediaId, playbackState.season, playbackState.episode, playbackState.streamItem?.url) {
         mutableStateOf(playbackState.streamItem)
     }
-    val streamUrl = activeStreamItem?.url ?: return
+    val streamUrl = activeStreamItem?.url ?: playbackState.streamItem?.url ?: return
 
     var isPlaying by remember { mutableStateOf(true) }
     var isLoading by remember { mutableStateOf(true) }
@@ -200,6 +211,9 @@ fun PlayerScreen(
     var totalDurationMs by remember { mutableLongStateOf(0L) }
     var controlsVisible by remember { mutableStateOf(true) }
     var isScreenLocked by remember { mutableStateOf(false) }
+    var showUpNext by remember { mutableStateOf(false) }
+    var upNextTimer by remember { mutableIntStateOf(10) }
+    var playerError by remember { mutableStateOf<String?>(null) }
 
     // Screen rotation state (Auto rotate to Landscape when entering playback)
     var orientationMode by remember { mutableStateOf(ScreenOrientationMode.LANDSCAPE) }
@@ -277,7 +291,7 @@ fun PlayerScreen(
     }
 
     // ExoPlayer instance with native FFmpeg decoding for Dolby DDP/Atmos Stereo PCM decoding & MediaCodec fallback
-    val exoPlayer = remember(streamUrl) {
+    val exoPlayer: androidx.media3.exoplayer.ExoPlayer = remember {
         val renderersFactory = object : DefaultRenderersFactory(context) {
             override fun buildAudioRenderers(
                 context: Context,
@@ -338,13 +352,13 @@ fun PlayerScreen(
         // Ultra-fast start & smooth re-buffering with optimized low-latency startup
         val loadControl = DefaultLoadControl.Builder()
             .setBufferDurationsMs(
-                /* minBufferMs = */ 8_000,
-                /* maxBufferMs = */ 40_000,
+                /* minBufferMs = */ 2_500, // Reduced from 8s for faster start
+                /* maxBufferMs = */ 30_000,
                 /* bufferForPlaybackMs = */ 500,
                 /* bufferForPlaybackAfterRebufferMs = */ 1_000
             )
             .setBackBuffer(
-                /* backBufferDurationMs = */ 10_000,
+                /* backBufferDurationMs = */ 8_000,
                 /* retainBackBufferFromKeyframe = */ true
             )
             .setPrioritizeTimeOverSizeThresholds(true)
@@ -352,8 +366,8 @@ fun PlayerScreen(
 
         val httpDataSourceFactory = DefaultHttpDataSource.Factory()
             .setUserAgent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
-            .setConnectTimeoutMs(8_000)
-            .setReadTimeoutMs(20_000)
+            .setConnectTimeoutMs(6_000)
+            .setReadTimeoutMs(15_000)
             .setAllowCrossProtocolRedirects(true)
             .setKeepPostFor302Redirects(true)
 
@@ -366,40 +380,131 @@ fun PlayerScreen(
             .setTrackSelector(trackSelector)
             .setLoadControl(loadControl)
             .setMediaSourceFactory(mediaSourceFactory)
-            .build().apply {
-            val parsedUri = try {
-                if (streamUrl.startsWith("/") || streamUrl.startsWith("file://") || streamUrl.startsWith("content://")) {
-                    if (streamUrl.startsWith("/")) java.io.File(streamUrl).toUri() else streamUrl.toUri()
-                } else {
-                    streamUrl.toUri()
-                }
-            } catch (e: Exception) {
+            .setAudioAttributes(androidx.media3.common.AudioAttributes.DEFAULT, true)
+            .build()
+    }
+
+    // Track the current episode/item to distinguish between quality switch and next episode
+    val currentVideoKey = remember(playbackState.mediaId, playbackState.season, playbackState.episode) {
+        "${playbackState.mediaId}_S${playbackState.season}_E${playbackState.episode}"
+    }
+    var lastVideoKey by remember { mutableStateOf<String?>(null) }
+
+    // Handle stream changes (initial load, quality switch, or next episode)
+    LaunchedEffect(playbackState.mediaId, playbackState.season, playbackState.episode, streamUrl) {
+        val isNewEpisode = lastVideoKey == null || currentVideoKey != lastVideoKey
+        lastVideoKey = currentVideoKey
+        
+        isLoading = true
+        playerError = null
+        showUpNext = false
+        upNextTimer = 15
+        
+        // Differentiate: Episode switch (reset to initial) vs Quality switch (maintain current)
+        val targetPos = if (isNewEpisode) {
+            playbackState.initialPositionMs.coerceAtLeast(0L)
+        } else {
+            // Quality switch: keep current position if we have a media item loaded
+            if (exoPlayer.currentMediaItem != null && exoPlayer.currentPosition > 0L) exoPlayer.currentPosition else currentPosMs
+        }
+        
+        // Reset UI progress states immediately for clean visual transition
+        currentPosMs = targetPos
+        totalDurationMs = 0L // Reset duration; will be updated once new metadata is ready
+        isSeeking = false // Reset seeking state for new load
+        
+        val parsedUri = try {
+            if (streamUrl.startsWith("/") || streamUrl.startsWith("file://") || streamUrl.startsWith("content://")) {
+                if (streamUrl.startsWith("/")) java.io.File(streamUrl).toUri() else streamUrl.toUri()
+            } else {
                 streamUrl.toUri()
             }
-            val mediaItem = MediaItem.fromUri(parsedUri)
-            setMediaItem(mediaItem)
-            if (currentPosMs > 0) {
-                seekTo(currentPosMs)
-            }
-            prepare()
-            playWhenReady = true
+        } catch (e: Exception) {
+            streamUrl.toUri()
         }
+        
+        val mediaItem = androidx.media3.common.MediaItem.fromUri(parsedUri)
+        exoPlayer.stop()
+        exoPlayer.clearMediaItems()
+        exoPlayer.setMediaItem(mediaItem, /* resetPosition = */ true)
+        if (targetPos > 0L) {
+            exoPlayer.seekTo(targetPos)
+        } else {
+            exoPlayer.seekTo(0, 0L)
+        }
+        exoPlayer.prepare()
+        exoPlayer.playWhenReady = true
+        exoPlayer.play()
     }
 
     // Track listeners & updates
     DisposableEffect(exoPlayer) {
         val listener = object : Player.Listener {
+            override fun onEvents(player: Player, events: Player.Events) {
+                val d = player.duration
+                if (d > 0 && d != androidx.media3.common.C.TIME_UNSET) {
+                    totalDurationMs = d
+                }
+                val pos = player.currentPosition
+                if (pos >= 0 && !isSeeking) {
+                    currentPosMs = pos
+                }
+            }
+
+            override fun onMediaItemTransition(mediaItem: androidx.media3.common.MediaItem?, reason: Int) {
+                val d = exoPlayer.duration
+                if (d > 0 && d != androidx.media3.common.C.TIME_UNSET) {
+                    totalDurationMs = d
+                }
+            }
+
+            override fun onTimelineChanged(timeline: androidx.media3.common.Timeline, reason: Int) {
+                val d = exoPlayer.duration
+                if (d > 0 && d != androidx.media3.common.C.TIME_UNSET) {
+                    totalDurationMs = d
+                }
+            }
+
             override fun onPlaybackStateChanged(state: Int) {
                 isLoading = state == Player.STATE_BUFFERING
                 if (state == Player.STATE_READY) {
                     isLoading = false
                     isSeeking = false
-                    totalDurationMs = exoPlayer.duration.coerceAtLeast(0L)
+                    val d = exoPlayer.duration
+                    if (d > 0 && d != androidx.media3.common.C.TIME_UNSET) {
+                        totalDurationMs = d
+                    }
+                    playerError = null
+                    if (exoPlayer.playWhenReady && !exoPlayer.isPlaying) {
+                        exoPlayer.play()
+                    }
                 }
+                if (state == Player.STATE_ENDED) {
+                    if (currentPlaybackState.nextEpisode != null) {
+                        showUpNext = false
+                        currentOnSaveProgress(exoPlayer.duration, exoPlayer.duration)
+                        currentOnNextClick?.invoke()
+                    } else {
+                        currentOnBackClick()
+                    }
+                }
+            }
+
+            override fun onPlayerError(error: androidx.media3.common.PlaybackException) {
+                isLoading = false
+                playerError = "Playback Error: ${error.localizedMessage ?: "Unknown network or codec issue"}"
+                android.util.Log.e("PlayerScreen", "ExoPlayer Error", error)
             }
 
             override fun onIsPlayingChanged(playing: Boolean) {
                 isPlaying = playing
+                if (playing) {
+                    isLoading = false
+                    val d = exoPlayer.duration
+                    if (d > 0 && d != androidx.media3.common.C.TIME_UNSET) {
+                        totalDurationMs = d
+                    }
+                }
             }
 
             override fun onTracksChanged(tracks: Tracks) {
@@ -412,24 +517,58 @@ fun PlayerScreen(
         exoPlayer.addListener(listener)
 
         onDispose {
-            onSaveProgress(exoPlayer.currentPosition, exoPlayer.duration.coerceAtLeast(0L))
+            currentOnSaveProgress(exoPlayer.currentPosition, exoPlayer.duration.coerceAtLeast(0L))
             exoPlayer.removeListener(listener)
             exoPlayer.release()
         }
     }
 
-    // Periodic time tick & progress save every 5 seconds
-    LaunchedEffect(exoPlayer) {
+    // Periodic time tick & progress save every 5 seconds + Up Next check
+    LaunchedEffect(playbackState.mediaId, playbackState.season, playbackState.episode) {
         var tick = 0
         while (true) {
-            delay(1000)
+            delay(800)
+            val pos = exoPlayer.currentPosition
+            val dur = exoPlayer.duration
+            if (pos >= 0) {
+                currentPosMs = pos
+            }
+            if (dur > 0 && dur != androidx.media3.common.C.TIME_UNSET) {
+                totalDurationMs = dur
+            }
+            
             if (exoPlayer.isPlaying) {
-                currentPosMs = exoPlayer.currentPosition
-                totalDurationMs = exoPlayer.duration.coerceAtLeast(0L)
-                tick++
-                if (tick % 5 == 0) {
-                    onSaveProgress(currentPosMs, totalDurationMs)
+                isLoading = false
+                // Up Next logic: last 25 seconds of video
+                val remaining = totalDurationMs - currentPosMs
+                if (currentPlaybackState.nextEpisode != null && totalDurationMs > 30000L && remaining in 1..25000L) {
+                    if (!showUpNext) {
+                        showUpNext = true
+                        upNextTimer = 15
+                    }
+                } else if (remaining > 25000L || remaining <= 0L) {
+                    showUpNext = false
                 }
+                
+                tick++
+                if (tick % 5 == 0 && totalDurationMs > 0) {
+                    currentOnSaveProgress(currentPosMs, totalDurationMs)
+                }
+            }
+        }
+    }
+    
+    // Up Next countdown
+    LaunchedEffect(showUpNext) {
+        if (showUpNext) {
+            while (upNextTimer > 0) {
+                delay(1000)
+                upNextTimer--
+            }
+            // Auto play when timer hits 0 if still showing
+            if (showUpNext) {
+                showUpNext = false
+                currentOnNextClick?.invoke()
             }
         }
     }
@@ -550,14 +689,14 @@ fun PlayerScreen(
                                     window.attributes = lp
                                 }
                                 gestureProgress = startVal
-                                gestureFeedbackText = "Brightness ${(startVal * 100).toInt()}%"
+                                gestureFeedbackText = "${(startVal * 100).toInt()}%"
                                 gestureFeedbackIcon = Icons.Default.BrightnessHigh
                             } else {
                                 val maxVol = audioManager?.getStreamMaxVolume(AudioManager.STREAM_MUSIC) ?: 15
                                 val newVolIndex = (startVal * maxVol).toInt().coerceIn(0, maxVol)
                                 audioManager?.setStreamVolume(AudioManager.STREAM_MUSIC, newVolIndex, 0)
                                 gestureProgress = startVal
-                                gestureFeedbackText = "Volume ${(startVal * 100).toInt()}%"
+                                gestureFeedbackText = "${(startVal * 100).toInt()}%"
                                 gestureFeedbackIcon = if (newVolIndex == 0) Icons.AutoMirrored.Filled.VolumeOff else Icons.AutoMirrored.Filled.VolumeUp
                             }
                         } else if (isHorizontalDrag) {
@@ -610,6 +749,7 @@ fun PlayerScreen(
                 }
             },
             update = { playerView ->
+                playerView.player = exoPlayer
                 playerView.resizeMode = resizeMode
             },
             modifier = Modifier.fillMaxSize()
@@ -697,7 +837,7 @@ fun PlayerScreen(
                             fontWeight = FontWeight.Bold
                         )
                         Text(
-                            text = " / ${formatTimestamp(totalDurationMs)}",
+                            text = if (totalDurationMs > 0) " / ${formatTimestamp(totalDurationMs)}" else " / --:--",
                             color = NuvioTextSecondary,
                             fontSize = 14.sp
                         )
@@ -775,47 +915,170 @@ fun PlayerScreen(
         // Gesture feedback overlay badge (Volume on Right & Brightness on Left)
         AnimatedVisibility(
             visible = gestureFeedbackText != null,
-            enter = fadeIn(),
-            exit = fadeOut(),
+            enter = fadeIn() + scaleIn(initialScale = 0.8f),
+            exit = fadeOut() + scaleOut(targetScale = 0.8f),
             modifier = Modifier
                 .align(if (isGestureLeftSide) Alignment.CenterStart else Alignment.CenterEnd)
-                .padding(horizontal = 32.dp)
+                .padding(horizontal = 48.dp)
         ) {
             Surface(
-                shape = RoundedCornerShape(16.dp),
-                color = Color.Black.copy(alpha = 0.88f),
-                border = androidx.compose.foundation.BorderStroke(1.5.dp, NuvioPrimary)
+                shape = RoundedCornerShape(24.dp),
+                color = Color.Black.copy(alpha = 0.15f), // Ultra transparent glass
+                border = BorderStroke(1.dp, Color.White.copy(alpha = 0.05f))
             ) {
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    modifier = Modifier.padding(horizontal = 20.dp, vertical = 12.dp)
+                Column(
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    modifier = Modifier.padding(horizontal = 20.dp, vertical = 22.dp)
                 ) {
                     gestureFeedbackIcon?.let { icon ->
                         Icon(
                             imageVector = icon,
                             contentDescription = null,
                             tint = NuvioPrimary,
-                            modifier = Modifier.size(26.dp)
+                            modifier = Modifier.size(40.dp)
                         )
-                        Spacer(modifier = Modifier.width(12.dp))
+                        Spacer(modifier = Modifier.height(12.dp))
                     }
-                    Column(horizontalAlignment = Alignment.Start) {
+                    Text(
+                        text = gestureFeedbackText ?: "",
+                        color = Color.White,
+                        fontSize = 18.sp,
+                        fontWeight = FontWeight.Black
+                    )
+                    Spacer(modifier = Modifier.height(14.dp))
+                    LinearProgressIndicator(
+                        progress = { gestureProgress },
+                        modifier = Modifier
+                            .width(4.dp)
+                            .height(80.dp)
+                            .clip(CircleShape),
+                        color = NuvioPrimary,
+                        trackColor = Color.White.copy(alpha = 0.08f)
+                    )
+                }
+            }
+        }
+
+        // Up Next Overlay (Bottom Right)
+        AnimatedVisibility(
+            visible = showUpNext && playbackState.nextEpisode != null,
+            enter = fadeIn() + slideInHorizontally { it },
+            exit = fadeOut() + slideOutHorizontally { it },
+            modifier = Modifier
+                .align(Alignment.BottomEnd)
+                .padding(24.dp)
+                .padding(bottom = if (controlsVisible) 100.dp else 0.dp) // Lift above controls
+        ) {
+            val next = playbackState.nextEpisode!!
+            Card(
+                shape = RoundedCornerShape(16.dp),
+                colors = CardDefaults.cardColors(containerColor = Color.Black.copy(alpha = 0.85f)),
+                border = BorderStroke(1.5.dp, NuvioPrimary.copy(alpha = 0.6f)),
+                modifier = Modifier.width(260.dp)
+            ) {
+                Column(modifier = Modifier.padding(16.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Box(
+                            modifier = Modifier
+                                .size(32.dp)
+                                .background(NuvioPrimary, CircleShape),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Text(
+                                text = upNextTimer.toString(),
+                                color = Color.Black,
+                                fontSize = 14.sp,
+                                fontWeight = FontWeight.Black
+                            )
+                        }
+                        Spacer(Modifier.width(12.dp))
                         Text(
-                            text = gestureFeedbackText ?: "",
-                            color = NuvioTextPrimary,
-                            fontSize = 15.sp,
+                            text = "Next Episode",
+                            color = NuvioPrimary,
+                            fontSize = 14.sp,
                             fontWeight = FontWeight.Bold
                         )
-                        Spacer(modifier = Modifier.height(4.dp))
-                        LinearProgressIndicator(
-                            progress = { gestureProgress },
-                            modifier = Modifier
-                                .width(110.dp)
-                                .height(4.dp)
-                                .clip(RoundedCornerShape(2.dp)),
-                            color = NuvioPrimary,
-                            trackColor = NuvioSurfaceVariant
-                        )
+                    }
+                    Spacer(Modifier.height(10.dp))
+                    Text(
+                        text = "E${next.episode}: ${next.title ?: "Episode ${next.episode}"}",
+                        color = Color.White,
+                        fontSize = 13.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                    Spacer(Modifier.height(14.dp))
+                    Button(
+                        onClick = { 
+                            showUpNext = false
+                            currentOnNextClick?.invoke() 
+                        },
+                        shape = RoundedCornerShape(8.dp),
+                        colors = ButtonDefaults.buttonColors(containerColor = Color.White, contentColor = Color.Black),
+                        modifier = Modifier.fillMaxWidth().height(36.dp),
+                        contentPadding = PaddingValues(0.dp)
+                    ) {
+                        Text("Play Now", fontSize = 13.sp, fontWeight = FontWeight.Bold)
+                    }
+                }
+            }
+        }
+
+        // Player Error Overlay
+        AnimatedVisibility(
+            visible = playerError != null,
+            enter = fadeIn(),
+            exit = fadeOut()
+        ) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(Color.Black.copy(alpha = 0.9f)),
+                contentAlignment = Alignment.Center
+            ) {
+                Column(
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    modifier = Modifier.padding(32.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Info,
+                        contentDescription = null,
+                        tint = Color.Red,
+                        modifier = Modifier.size(48.dp)
+                    )
+                    Spacer(Modifier.height(16.dp))
+                    Text(
+                        text = "Playback Failed",
+                        color = Color.White,
+                        fontSize = 18.sp,
+                        fontWeight = FontWeight.Bold
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    Text(
+                        text = playerError ?: "Unknown Error",
+                        color = NuvioTextSecondary,
+                        fontSize = 13.sp,
+                        textAlign = androidx.compose.ui.text.style.TextAlign.Center
+                    )
+                    Spacer(Modifier.height(24.dp))
+                    Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
+                        Button(
+                            onClick = {
+                                playerError = null
+                                exoPlayer.prepare()
+                                exoPlayer.play()
+                            },
+                            colors = ButtonDefaults.buttonColors(containerColor = NuvioPrimary, contentColor = Color.Black)
+                        ) {
+                            Text("Retry")
+                        }
+                        Button(
+                            onClick = onBackClick,
+                            colors = ButtonDefaults.buttonColors(containerColor = Color.White.copy(alpha = 0.2f), contentColor = Color.White)
+                        ) {
+                            Text("Close")
+                        }
                     }
                 }
             }
@@ -1118,8 +1381,9 @@ fun PlayerScreen(
                         horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically
                     ) {
+                        val durationText = if (totalDurationMs > 0) formatTimestamp(totalDurationMs) else "--:--"
                         Text(
-                            text = "${formatTimestamp(currentPosMs)} / ${formatTimestamp(totalDurationMs)}",
+                            text = "${formatTimestamp(currentPosMs)} / $durationText",
                             color = NuvioTextPrimary,
                             fontSize = 12.sp,
                             fontWeight = FontWeight.SemiBold

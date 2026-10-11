@@ -20,6 +20,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
@@ -88,7 +89,16 @@ import com.example.ui.theme.NuvioTextPrimary
 import com.example.ui.theme.NuvioTextSecondary
 import com.example.ui.viewmodel.NuvioViewModel
 
-@OptIn(ExperimentalLayoutApi::class)
+import androidx.compose.material.icons.filled.KeyboardArrowDown
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.rememberModalBottomSheetState
+import androidx.compose.ui.draw.blur
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.runtime.rememberCoroutineScope
+import kotlinx.coroutines.launch
+
+@OptIn(ExperimentalLayoutApi::class, ExperimentalMaterial3Api::class)
 @Composable
 fun MediaDetailScreen(
     viewModel: NuvioViewModel,
@@ -102,6 +112,11 @@ fun MediaDetailScreen(
     val isSeries = mediaItem.type.equals("series", true)
 
     var selectedEpisode by remember { mutableStateOf<VideoEpisode?>(null) }
+    var showSeasonPicker by remember { mutableStateOf(false) }
+    var showEpisodeStreams by remember { mutableStateOf(false) }
+    val seasonSheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    val episodeSheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    val scope = rememberCoroutineScope()
 
     // Auto-refresh logic for streams
     androidx.compose.runtime.LaunchedEffect(mediaItem.id, detailState.selectedEpisode?.id) {
@@ -120,34 +135,48 @@ fun MediaDetailScreen(
             .fillMaxSize()
             .background(NuvioBackground)
     ) {
-        LazyColumn(
-            modifier = Modifier.fillMaxSize(),
-            contentPadding = PaddingValues(bottom = 120.dp)
+        // Main Content with Blur when loading
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .blur(if (detailState.isLoadingStreams && detailState.streams.isEmpty()) 12.dp else 0.dp)
+                .graphicsLayer {
+                    alpha = if (detailState.isLoadingStreams && detailState.streams.isEmpty()) 0.6f else 1f
+                }
         ) {
-            // Backdrop Header
-            item {
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(340.dp)
-                ) {
-                    AsyncImage(
-                        model = meta?.background ?: mediaItem.background ?: mediaItem.poster,
-                        contentDescription = mediaItem.name,
-                        contentScale = ContentScale.Crop,
-                        modifier = Modifier.fillMaxSize()
-                    )
+            LazyColumn(
+                modifier = Modifier.fillMaxSize(),
+                contentPadding = PaddingValues(bottom = 120.dp)
+            ) {
+                // Backdrop Header
+                item {
+                    val configuration = androidx.compose.ui.platform.LocalConfiguration.current
+                    val screenHeight = configuration.screenHeightDp.dp
+                    val headerHeight = (screenHeight * 0.38f).coerceIn(260.dp, 380.dp)
 
-                    // Gradient overlays
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(headerHeight)
+                    ) {
+                        AsyncImage(
+                            model = meta?.background ?: mediaItem.background ?: mediaItem.poster,
+                            contentDescription = mediaItem.name,
+                            contentScale = ContentScale.Crop,
+                            modifier = Modifier.fillMaxSize()
+                        )
+
+                    // Multi-layer immersive gradient
                     Box(
                         modifier = Modifier
                             .fillMaxSize()
                             .background(
                                 Brush.verticalGradient(
                                     colors = listOf(
-                                        NuvioBackground.copy(alpha = 0.6f),
+                                        Color.Black.copy(alpha = 0.5f),
                                         Color.Transparent,
-                                        NuvioBackground.copy(alpha = 0.85f),
+                                        Color.Transparent,
+                                        NuvioBackground.copy(alpha = 0.9f),
                                         NuvioBackground
                                     )
                                 )
@@ -161,104 +190,77 @@ fun MediaDetailScreen(
                 Column(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(horizontal = 16.dp)
+                        .padding(horizontal = 24.dp)
                 ) {
-                    // Title
+                    // Premium Display Title
                     Text(
-                        text = mediaItem.name,
-                        color = NuvioTextPrimary,
-                        fontSize = 24.sp,
-                        fontWeight = FontWeight.ExtraBold,
-                        lineHeight = 30.sp,
+                        text = mediaItem.name.uppercase(),
+                        color = Color.White,
+                        fontSize = 18.sp,
+                        fontWeight = FontWeight.Black,
+                        lineHeight = 24.sp,
+                        letterSpacing = (-0.4).sp,
                         maxLines = 2,
                         overflow = TextOverflow.Ellipsis
                     )
 
-                    Spacer(modifier = Modifier.height(10.dp))
+                    Spacer(modifier = Modifier.height(14.dp))
 
-                    // Badges row: Rating, Year, Runtime, Type
+                    // Polished Badges row
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        horizontalArrangement = Arrangement.spacedBy(10.dp)
                     ) {
                         val rating = formatRating(meta?.imdbRating ?: mediaItem.imdbRating)
                         if (!rating.isNullOrBlank()) {
-                            Surface(
-                                shape = RoundedCornerShape(6.dp),
-                                color = Color.Black.copy(alpha = 0.7f),
-                                modifier = Modifier.border(0.5.dp, NuvioGold, RoundedCornerShape(6.dp))
-                            ) {
-                                Row(
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 3.dp)
-                                ) {
-                                    Icon(
-                                        imageVector = Icons.Default.Star,
-                                        contentDescription = null,
-                                        tint = NuvioGold,
-                                        modifier = Modifier.size(13.dp)
-                                    )
-                                    Spacer(modifier = Modifier.width(3.dp))
-                                    Text(
-                                        text = rating,
-                                        color = NuvioGold,
-                                        fontSize = 11.sp,
-                                        fontWeight = FontWeight.Bold,
-                                        maxLines = 1,
-                                        softWrap = false
-                                    )
-                                }
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Icon(
+                                    imageVector = Icons.Default.Star,
+                                    contentDescription = null,
+                                    tint = NuvioGold,
+                                    modifier = Modifier.size(14.dp)
+                                )
+                                Spacer(modifier = Modifier.width(4.dp))
+                                Text(
+                                    text = "$rating IMDb",
+                                    color = NuvioGold,
+                                    fontSize = 12.sp,
+                                    fontWeight = FontWeight.Bold
+                                )
                             }
                         }
 
                         val year = meta?.year ?: meta?.releaseInfo ?: mediaItem.year
                         if (!year.isNullOrBlank()) {
-                            Surface(
-                                shape = RoundedCornerShape(6.dp),
-                                color = NuvioSurfaceVariant
-                            ) {
-                                Text(
-                                    text = year,
-                                    color = NuvioTextSecondary,
-                                    fontSize = 11.sp,
-                                    fontWeight = FontWeight.SemiBold,
-                                    maxLines = 1,
-                                    softWrap = false,
-                                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 3.dp)
-                                )
-                            }
+                            Text(
+                                text = year,
+                                color = NuvioTextSecondary,
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.Bold
+                            )
                         }
 
                         val runtime = meta?.runtime ?: mediaItem.runtime
                         if (!runtime.isNullOrBlank()) {
-                            Surface(
-                                shape = RoundedCornerShape(6.dp),
-                                color = NuvioSurfaceVariant
-                            ) {
-                                Text(
-                                    text = runtime,
-                                    color = NuvioTextSecondary,
-                                    fontSize = 11.sp,
-                                    fontWeight = FontWeight.SemiBold,
-                                    maxLines = 1,
-                                    softWrap = false,
-                                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 3.dp)
-                                )
-                            }
+                            Text(
+                                text = runtime,
+                                color = NuvioTextSecondary,
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.Bold
+                            )
                         }
 
                         Surface(
                             shape = RoundedCornerShape(6.dp),
-                            color = NuvioPrimary.copy(alpha = 0.85f)
+                            color = NuvioPrimary.copy(alpha = 0.2f),
+                            border = BorderStroke(1.dp, NuvioPrimary.copy(alpha = 0.5f))
                         ) {
                             Text(
                                 text = if (isSeries) "SERIES" else "MOVIE",
-                                color = Color.Black,
-                                fontSize = 10.sp,
+                                color = NuvioPrimary,
+                                fontSize = 9.sp,
                                 fontWeight = FontWeight.ExtraBold,
-                                maxLines = 1,
-                                softWrap = false,
-                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 3.dp)
+                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
                             )
                         }
                     }
@@ -296,6 +298,7 @@ fun MediaDetailScreen(
                         horizontalArrangement = Arrangement.spacedBy(12.dp)
                     ) {
                         val firstStream = detailState.streams.firstOrNull()
+                        val qBadge = firstStream?.displayQuality?.takeIf { it.isNotBlank() }?.let { "($it)" } ?: ""
                         Button(
                             onClick = {
                                 if (firstStream != null) {
@@ -327,7 +330,7 @@ fun MediaDetailScreen(
                             )
                             Spacer(modifier = Modifier.width(8.dp))
                             Text(
-                                text = if (detailState.streams.isNotEmpty()) "Play (${firstStream?.displayQuality ?: "HD"})" else "Finding Streams...",
+                                text = if (detailState.streams.isNotEmpty()) "Play $qBadge".trim() else "Finding Streams...",
                                 fontSize = 14.sp,
                                 fontWeight = FontWeight.Bold,
                                 maxLines = 1,
@@ -359,15 +362,15 @@ fun MediaDetailScreen(
                         Text(
                             text = "Storyline",
                             color = NuvioTextPrimary,
-                            fontSize = 15.sp,
+                            fontSize = 14.sp,
                             fontWeight = FontWeight.Bold
                         )
                         Spacer(modifier = Modifier.height(6.dp))
                         Text(
                             text = description,
                             color = NuvioTextSecondary,
-                            fontSize = 13.sp,
-                            lineHeight = 20.sp
+                            fontSize = 12.sp,
+                            lineHeight = 18.sp
                         )
                     }
 
@@ -378,7 +381,7 @@ fun MediaDetailScreen(
                         Text(
                             text = "Cast & Crew",
                             color = NuvioTextPrimary,
-                            fontSize = 17.sp,
+                            fontSize = 15.sp,
                             fontWeight = FontWeight.ExtraBold
                         )
                         Spacer(modifier = Modifier.height(10.dp))
@@ -473,40 +476,41 @@ fun MediaDetailScreen(
 
                         Spacer(modifier = Modifier.height(10.dp))
 
-                        // Seasons tabs (Season 1, Season 2, ...)
-                        val totalTabs = detailState.seasons.size
-                        val selectedTabIdx = detailState.seasons.indexOf(detailState.selectedSeason).coerceAtLeast(0)
-
-                        if (totalTabs > 0) {
-                            TabRow(
-                                selectedTabIndex = selectedTabIdx.coerceIn(0, (totalTabs - 1).coerceAtLeast(0)),
-                                containerColor = NuvioBackground,
-                                contentColor = NuvioPrimary,
-                                indicator = { tabPositions ->
-                                    if (selectedTabIdx < tabPositions.size) {
-                                        TabRowDefaults.SecondaryIndicator(
-                                            Modifier.tabIndicatorOffset(tabPositions[selectedTabIdx]),
-                                            color = NuvioPrimary
+                        // Season Selector Dropdown Button
+                        if (detailState.seasons.isNotEmpty()) {
+                            Surface(
+                                shape = RoundedCornerShape(12.dp),
+                                color = NuvioSurfaceVariant,
+                                modifier = Modifier
+                                    .padding(horizontal = 16.dp)
+                                    .fillMaxWidth()
+                                    .clickable { showSeasonPicker = true }
+                                    .border(1.dp, NuvioCardBorder, RoundedCornerShape(12.dp))
+                            ) {
+                                Row(
+                                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.SpaceBetween
+                                ) {
+                                    Column {
+                                        Text(
+                                            text = "SEASON",
+                                            color = NuvioTextMuted,
+                                            fontSize = 9.sp,
+                                            fontWeight = FontWeight.Bold,
+                                            letterSpacing = 1.sp
+                                        )
+                                        Text(
+                                            text = if (detailState.selectedSeason == 0) "Specials" else "Season ${detailState.selectedSeason}",
+                                            color = NuvioPrimary,
+                                            fontSize = 16.sp,
+                                            fontWeight = FontWeight.ExtraBold
                                         )
                                     }
-                                },
-                                modifier = Modifier.padding(horizontal = 16.dp)
-                            ) {
-                                detailState.seasons.forEach { s ->
-                                    val isSelected = detailState.selectedSeason == s
-                                    Tab(
-                                        selected = isSelected,
-                                        onClick = { viewModel.selectSeason(s) },
-                                        text = {
-                                            Text(
-                                                text = if (s == 0) "Specials" else "Season $s",
-                                                fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
-                                                fontSize = 11.sp,
-                                                color = if (isSelected) NuvioPrimary else NuvioTextSecondary,
-                                                maxLines = 1,
-                                                softWrap = false
-                                            )
-                                        }
+                                    Icon(
+                                        imageVector = Icons.Default.KeyboardArrowDown,
+                                        contentDescription = "Select Season",
+                                        tint = NuvioPrimary
                                     )
                                 }
                             }
@@ -520,29 +524,27 @@ fun MediaDetailScreen(
                                 .padding(horizontal = 16.dp),
                             verticalArrangement = Arrangement.spacedBy(10.dp)
                         ) {
-                            if (!detailState.isSeasonCombinedOnly && detailState.seasonEpisodes.isNotEmpty()) {
-                                // Single episodes view ONLY (clean Netflix style)
+                            if (detailState.seasonEpisodes.isNotEmpty()) {
+                                // Single episodes list
                                 detailState.seasonEpisodes.forEach { ep ->
                                     val isChosen = detailState.selectedEpisode?.id == ep.id
                                     Card(
-                                        shape = RoundedCornerShape(10.dp),
+                                        shape = RoundedCornerShape(12.dp),
                                         colors = CardDefaults.cardColors(
-                                            containerColor = if (isChosen) NuvioSurfaceVariant else NuvioCard
+                                            containerColor = if (isChosen) NuvioSurfaceVariant else Color.Transparent
                                         ),
                                         modifier = Modifier
                                             .fillMaxWidth()
-                                            .border(
-                                                1.dp,
-                                                if (isChosen) NuvioPrimary else NuvioCardBorder,
-                                                RoundedCornerShape(10.dp)
-                                            )
-                                            .clickable { viewModel.playEpisodeDirectly(mediaItem, ep) }
+                                            .clickable { 
+                                                viewModel.loadEpisodeStreams(ep)
+                                                showEpisodeStreams = true
+                                            }
                                             .testTag("episode_card_${ep.id}")
                                     ) {
                                         Row(
                                             modifier = Modifier
                                                 .fillMaxWidth()
-                                                .padding(10.dp),
+                                                .padding(12.dp),
                                             verticalAlignment = Alignment.CenterVertically,
                                             horizontalArrangement = Arrangement.SpaceBetween
                                         ) {
@@ -551,11 +553,16 @@ fun MediaDetailScreen(
                                                 verticalAlignment = Alignment.CenterVertically
                                             ) {
                                                 // Netflix style compact thumbnail
+                                                val configuration = androidx.compose.ui.platform.LocalConfiguration.current
+                                                val screenWidth = configuration.screenWidthDp.dp
+                                                val epThumbWidth = (screenWidth * 0.28f).coerceIn(90.dp, 120.dp)
+                                                val epThumbHeight = epThumbWidth * 0.58f
+
                                                 Box(
                                                     modifier = Modifier
-                                                        .width(84.dp)
-                                                        .height(52.dp)
-                                                        .clip(RoundedCornerShape(6.dp))
+                                                        .width(epThumbWidth)
+                                                        .height(epThumbHeight)
+                                                        .clip(RoundedCornerShape(8.dp))
                                                         .background(NuvioSurfaceVariant)
                                                 ) {
                                                     AsyncImage(
@@ -564,40 +571,27 @@ fun MediaDetailScreen(
                                                         contentScale = ContentScale.Crop,
                                                         modifier = Modifier.fillMaxSize()
                                                     )
-                                                    Box(
-                                                        modifier = Modifier
-                                                            .align(Alignment.Center)
-                                                            .size(22.dp)
-                                                            .background(Color.Black.copy(alpha = 0.65f), CircleShape),
-                                                        contentAlignment = Alignment.Center
-                                                    ) {
-                                                        Icon(
-                                                            imageVector = Icons.Default.PlayArrow,
-                                                            contentDescription = null,
-                                                            tint = NuvioPrimary,
-                                                            modifier = Modifier.size(14.dp)
-                                                        )
-                                                    }
                                                 }
 
-                                                Spacer(modifier = Modifier.width(10.dp))
+                                                Spacer(modifier = Modifier.width(14.dp))
 
                                                 Column(modifier = Modifier.weight(1f)) {
                                                     Text(
-                                                        text = "E${ep.episode}. ${ep.title ?: "Episode ${ep.episode}"}",
-                                                        color = NuvioTextPrimary,
-                                                        fontSize = 13.sp,
+                                                        text = "E${ep.episode} • ${ep.title ?: "Episode ${ep.episode}"}",
+                                                        color = Color.White,
+                                                        fontSize = 14.sp,
                                                         fontWeight = FontWeight.Bold,
                                                         maxLines = 1,
                                                         overflow = TextOverflow.Ellipsis
                                                     )
                                                     if (!ep.overview.isNullOrBlank()) {
-                                                        Spacer(modifier = Modifier.height(2.dp))
+                                                        Spacer(modifier = Modifier.height(4.dp))
                                                         Text(
                                                             text = ep.overview,
                                                             color = NuvioTextSecondary,
                                                             fontSize = 11.sp,
-                                                            maxLines = 1,
+                                                            maxLines = 2,
+                                                            lineHeight = 14.sp,
                                                             overflow = TextOverflow.Ellipsis
                                                         )
                                                     }
@@ -608,7 +602,10 @@ fun MediaDetailScreen(
 
                                             Row(verticalAlignment = Alignment.CenterVertically) {
                                                 IconButton(
-                                                    onClick = { viewModel.downloadEpisodeDirectly(mediaItem, ep) },
+                                                    onClick = { 
+                                                        viewModel.loadEpisodeStreams(ep)
+                                                        showEpisodeStreams = true
+                                                    },
                                                     modifier = Modifier
                                                         .size(36.dp)
                                                         .background(NuvioSurfaceVariant, RoundedCornerShape(10.dp))
@@ -624,9 +621,61 @@ fun MediaDetailScreen(
                                                 Spacer(modifier = Modifier.width(6.dp))
                                                 EpisodeActionButton(
                                                     isSelected = isChosen,
-                                                    onClick = { viewModel.playEpisodeDirectly(mediaItem, ep) }
+                                                    onClick = { 
+                                                        viewModel.loadEpisodeStreams(ep)
+                                                        showEpisodeStreams = true
+                                                    }
                                                 )
                                             }
+                                        }
+                                    }
+                                }
+                            }
+                            
+                            // Full Season Packs Section (Segregated)
+                            if (detailState.combinedFiles.isNotEmpty()) {
+                                Spacer(modifier = Modifier.height(16.dp))
+                                Text(
+                                    text = "Full Season Packs",
+                                    color = NuvioTextPrimary,
+                                    fontSize = 15.sp,
+                                    fontWeight = FontWeight.ExtraBold,
+                                    modifier = Modifier.padding(bottom = 8.dp)
+                                )
+                                
+                                detailState.combinedFiles.forEach { pack ->
+                                    val isChosen = detailState.selectedEpisode?.id == pack.id
+                                    Card(
+                                        shape = RoundedCornerShape(12.dp),
+                                        colors = CardDefaults.cardColors(
+                                            containerColor = if (isChosen) NuvioPrimary.copy(alpha = 0.1f) else NuvioSurfaceVariant.copy(alpha = 0.4f)
+                                        ),
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .clickable { 
+                                                viewModel.loadEpisodeStreams(pack)
+                                                showEpisodeStreams = true
+                                            }
+                                            .border(1.dp, if (isChosen) NuvioPrimary.copy(alpha = 0.5f) else NuvioCardBorder, RoundedCornerShape(12.dp))
+                                    ) {
+                                        Row(
+                                            modifier = Modifier.padding(14.dp),
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            horizontalArrangement = Arrangement.SpaceBetween
+                                        ) {
+                                            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
+                                                Icon(Icons.Default.HighQuality, null, tint = NuvioPrimary, modifier = Modifier.size(20.dp))
+                                                Spacer(Modifier.width(12.dp))
+                                                Text(
+                                                    text = pack.displayTitle,
+                                                    color = Color.White,
+                                                    fontSize = 13.sp,
+                                                    fontWeight = FontWeight.Bold,
+                                                    maxLines = 2,
+                                                    overflow = TextOverflow.Ellipsis
+                                                )
+                                            }
+                                            Icon(Icons.Default.PlayArrow, null, tint = NuvioPrimary)
                                         }
                                     }
                                 }
@@ -636,112 +685,147 @@ fun MediaDetailScreen(
                 }
             }
 
-            // Server Streams Section
-            item {
-                Spacer(modifier = Modifier.height(26.dp))
+            // Server Streams Section (For Movies Only)
+            if (!isSeries) {
+                item {
+                    Spacer(modifier = Modifier.height(26.dp))
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 16.dp)
+                    ) {
+                        Text(
+                            text = "Streams & Sources",
+                            color = NuvioTextPrimary,
+                            fontSize = 17.sp,
+                            fontWeight = FontWeight.Bold
+                        )
+                        Spacer(modifier = Modifier.height(10.dp))
+
+                        if (detailState.streams.isEmpty() && !detailState.isLoadingStreams) {
+                            Surface(
+                                shape = RoundedCornerShape(10.dp),
+                                color = NuvioSurfaceVariant,
+                                modifier = Modifier.fillMaxWidth().border(1.dp, NuvioCardBorder, RoundedCornerShape(10.dp))
+                            ) {
+                                Text(
+                                    text = "No streams found for this title.",
+                                    color = NuvioTextSecondary,
+                                    fontSize = 12.sp,
+                                    modifier = Modifier.padding(12.dp)
+                                )
+                            }
+                        } else {
+                            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                                detailState.streams.forEach { stream ->
+                                    StreamOptionCard(
+                                        stream = stream,
+                                        onPlay = {
+                                            viewModel.playStream(
+                                                item = mediaItem,
+                                                streamItem = stream,
+                                                availableStreams = detailState.streams
+                                            )
+                                        },
+                                        onDownload = {
+                                            viewModel.downloadStream(item = mediaItem, stream = stream)
+                                        }
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+        // Episode Streams Bottom Sheet
+        if (showEpisodeStreams) {
+            ModalBottomSheet(
+                onDismissRequest = { showEpisodeStreams = false },
+                sheetState = episodeSheetState,
+                containerColor = NuvioBackground,
+                dragHandle = {
+                    Box(
+                        modifier = Modifier
+                            .padding(vertical = 12.dp)
+                            .width(40.dp)
+                            .height(4.dp)
+                            .background(Color.White.copy(alpha = 0.2f), CircleShape)
+                    )
+                }
+            ) {
                 Column(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(horizontal = 16.dp)
+                        .padding(bottom = 32.dp)
                 ) {
+                    val ep = detailState.selectedEpisode
                     Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
+                        modifier = Modifier.padding(horizontal = 24.dp, vertical = 16.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Column {
+                        Column(modifier = Modifier.weight(1f)) {
                             Text(
-                                text = "Streams & Sources",
-                                color = NuvioTextPrimary,
-                                fontSize = 17.sp,
-                                fontWeight = FontWeight.Bold
+                                text = if (ep?.isCombined == true) ep.displayTitle else "Episode ${ep?.episode}",
+                                color = Color.White,
+                                fontSize = 18.sp,
+                                fontWeight = FontWeight.Black
                             )
-                            Text(
-                                text = "Powered by Server Addon",
-                                color = NuvioTextMuted,
-                                fontSize = 11.sp
-                            )
+                            if (ep?.isCombined == false) {
+                                Text(
+                                    text = ep.title ?: "",
+                                    color = NuvioTextSecondary,
+                                    fontSize = 12.sp,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                            }
                         }
-
-                        // No manual refresh button as per request, auto-refresh is active
+                        
+                        if (detailState.isLoadingEpisodeStreams) {
+                            CircularProgressIndicator(color = NuvioPrimary, modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
+                        }
                     }
 
-                    Spacer(modifier = Modifier.height(10.dp))
-
-                    if (detailState.isLoadingStreams && detailState.streams.isEmpty()) {
-                        // Custom Loading Animation
-                        Column(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(vertical = 40.dp),
-                            horizontalAlignment = Alignment.CenterHorizontally,
-                            verticalArrangement = Arrangement.Center
-                        ) {
-                            CircularProgressIndicator(
-                                color = NuvioPrimary,
-                                modifier = Modifier.size(36.dp),
-                                strokeWidth = 3.dp
-                            )
-                            Spacer(modifier = Modifier.height(12.dp))
-                            Text(
-                                text = "Loading Streams...",
-                                color = NuvioTextSecondary,
-                                fontSize = 14.sp,
-                                fontWeight = FontWeight.Medium
-                            )
-                        }
-                    } else if (detailState.streamErrorMessage != null && detailState.streams.isEmpty()) {
-                        Surface(
-                            shape = RoundedCornerShape(10.dp),
-                            color = NuvioSurfaceVariant,
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .border(1.dp, NuvioCardBorder, RoundedCornerShape(10.dp))
-                        ) {
-                            Text(
-                                text = detailState.streamErrorMessage ?: "No streams available",
-                                color = NuvioTextSecondary,
-                                fontSize = 12.sp,
-                                modifier = Modifier.padding(12.dp)
-                            )
-                        }
-                    } else if (detailState.streams.isEmpty() && !detailState.isLoadingStreams) {
-                        Surface(
-                            shape = RoundedCornerShape(10.dp),
-                            color = NuvioSurfaceVariant,
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .border(1.dp, NuvioCardBorder, RoundedCornerShape(10.dp))
-                        ) {
-                            Text(
-                                text = "No streams found on Server channels for this title.",
-                                color = NuvioTextSecondary,
-                                fontSize = 12.sp,
-                                modifier = Modifier.padding(12.dp)
-                            )
-                        }
+                    if (detailState.episodeStreams.isEmpty() && !detailState.isLoadingEpisodeStreams) {
+                        Text(
+                            text = "No streams available for this episode.",
+                            color = NuvioTextMuted,
+                            fontSize = 13.sp,
+                            modifier = Modifier.padding(horizontal = 24.dp, vertical = 20.dp)
+                        )
                     } else {
-                        Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                            detailState.streams.forEachIndexed { index, stream ->
+                        LazyColumn(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(400.dp),
+                            contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp),
+                            verticalArrangement = Arrangement.spacedBy(12.dp)
+                        ) {
+                            items(detailState.episodeStreams) { stream ->
                                 StreamOptionCard(
                                     stream = stream,
                                     onPlay = {
                                         viewModel.playStream(
                                             item = mediaItem,
                                             streamItem = stream,
-                                            availableStreams = detailState.streams,
-                                            season = selectedEpisode?.season,
-                                            episode = selectedEpisode?.episode,
-                                            episodeTitle = selectedEpisode?.title
+                                            availableStreams = detailState.episodeStreams,
+                                            season = ep?.season,
+                                            episode = ep?.episode,
+                                            episodeTitle = ep?.title,
+                                            videoEpisode = ep
                                         )
+                                        showEpisodeStreams = false
                                     },
                                     onDownload = {
                                         viewModel.downloadStream(
                                             item = mediaItem,
                                             stream = stream,
-                                            season = selectedEpisode?.season,
-                                            episode = selectedEpisode?.episode,
-                                            episodeTitle = selectedEpisode?.title
+                                            season = ep?.season,
+                                            episode = ep?.episode,
+                                            episodeTitle = ep?.title
                                         )
                                     }
                                 )
@@ -752,7 +836,124 @@ fun MediaDetailScreen(
             }
         }
 
-        // Top Navigation Bar (floating with back button, protected by gradient so it never overlaps text)
+        // Season Picker Bottom Sheet
+        if (showSeasonPicker) {
+            ModalBottomSheet(
+                onDismissRequest = { showSeasonPicker = false },
+                sheetState = seasonSheetState,
+                containerColor = NuvioBackground,
+                dragHandle = {
+                    Box(
+                        modifier = Modifier
+                            .padding(vertical = 12.dp)
+                            .width(40.dp)
+                            .height(4.dp)
+                            .background(Color.White.copy(alpha = 0.2f), CircleShape)
+                    )
+                }
+            ) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(bottom = 32.dp)
+                ) {
+                    Text(
+                        text = "Select Season",
+                        color = Color.White,
+                        fontSize = 18.sp,
+                        fontWeight = FontWeight.Black,
+                        modifier = Modifier.padding(horizontal = 24.dp, vertical = 16.dp)
+                    )
+
+                    LazyColumn(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(300.dp)
+                    ) {
+                        items(detailState.seasons) { season ->
+                            val isSelected = detailState.selectedSeason == season
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clickable {
+                                        viewModel.selectSeason(season)
+                                        scope.launch {
+                                            seasonSheetState.hide()
+                                            showSeasonPicker = false
+                                        }
+                                    }
+                                    .background(if (isSelected) NuvioPrimary.copy(alpha = 0.1f) else Color.Transparent)
+                                    .padding(horizontal = 24.dp, vertical = 16.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.SpaceBetween
+                            ) {
+                                Text(
+                                    text = if (season == 0) "Specials" else "Season $season",
+                                    color = if (isSelected) NuvioPrimary else NuvioTextPrimary,
+                                    fontSize = 16.sp,
+                                    fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium
+                                )
+                                if (isSelected) {
+                                    Icon(
+                                        imageVector = Icons.Default.CheckCircle,
+                                        contentDescription = null,
+                                        tint = NuvioPrimary,
+                                        modifier = Modifier.size(20.dp)
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // High-Quality Full Screen Loading Overlay
+        androidx.compose.animation.AnimatedVisibility(
+            visible = detailState.isLoadingStreams && detailState.streams.isEmpty(),
+            enter = androidx.compose.animation.fadeIn(),
+            exit = androidx.compose.animation.fadeOut()
+        ) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(Color.Black.copy(alpha = 0.3f)),
+                contentAlignment = Alignment.Center
+            ) {
+                Column(
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.Center,
+                    modifier = Modifier
+                        .background(
+                            Color.Black.copy(alpha = 0.7f),
+                            RoundedCornerShape(24.dp)
+                        )
+                        .padding(40.dp)
+                ) {
+                    CircularProgressIndicator(
+                        color = NuvioPrimary,
+                        modifier = Modifier.size(48.dp),
+                        strokeWidth = 4.dp
+                    )
+                    Spacer(modifier = Modifier.height(20.dp))
+                    Text(
+                        text = "Fetching Streams",
+                        color = NuvioTextPrimary,
+                        fontSize = 18.sp,
+                        fontWeight = FontWeight.Bold,
+                        letterSpacing = 1.sp
+                    )
+                    Text(
+                        text = "Searching high quality sources...",
+                        color = NuvioTextSecondary,
+                        fontSize = 12.sp,
+                        modifier = Modifier.padding(top = 4.dp)
+                    )
+                }
+            }
+        }
+
+        // Top Navigation Bar
         Row(
             modifier = Modifier
                 .fillMaxWidth()
@@ -799,6 +1000,7 @@ private fun EpisodeActionButton(
         color = if (isSelected) NuvioPrimary else NuvioSurfaceVariant,
         border = if (!isSelected) BorderStroke(1.dp, NuvioCardBorder) else null,
         modifier = modifier
+            .widthIn(min = 92.dp)
             .height(34.dp)
             .clickable(onClick = onClick)
     ) {
@@ -811,16 +1013,17 @@ private fun EpisodeActionButton(
                 imageVector = if (isSelected) Icons.Default.CheckCircle else Icons.Default.PlayArrow,
                 contentDescription = null,
                 tint = if (isSelected) Color.Black else NuvioPrimary,
-                modifier = Modifier.size(14.dp)
+                modifier = Modifier.size(16.dp)
             )
-            Spacer(modifier = Modifier.width(4.dp))
+            Spacer(modifier = Modifier.width(6.dp))
             Text(
                 text = if (isSelected) "Playing" else "Play",
                 color = if (isSelected) Color.Black else NuvioTextPrimary,
                 fontSize = 12.sp,
                 fontWeight = FontWeight.Bold,
                 maxLines = 1,
-                softWrap = false
+                softWrap = false,
+                overflow = TextOverflow.Visible
             )
         }
     }
@@ -856,55 +1059,57 @@ fun StreamOptionCard(
                     verticalArrangement = Arrangement.spacedBy(4.dp)
                 ) {
                     // Quality badge
-                    Surface(
-                        shape = RoundedCornerShape(5.dp),
-                        color = NuvioPrimary
-                    ) {
-                        Text(
-                            text = stream.displayQuality,
-                            color = Color.Black,
-                            fontSize = 11.sp,
-                            fontWeight = FontWeight.ExtraBold,
-                            maxLines = 1,
-                            softWrap = false,
-                            overflow = TextOverflow.Ellipsis,
-                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
-                        )
+                    if (stream.displayQuality.isNotBlank()) {
+                        Surface(
+                            shape = RoundedCornerShape(4.dp),
+                            color = NuvioPrimary
+                        ) {
+                            Text(
+                                text = stream.displayQuality,
+                                color = Color.Black,
+                                fontSize = 9.sp,
+                                fontWeight = FontWeight.ExtraBold,
+                                maxLines = 1,
+                                softWrap = false,
+                                overflow = TextOverflow.Ellipsis,
+                                modifier = Modifier.padding(horizontal = 5.dp, vertical = 1.dp)
+                            )
+                        }
                     }
 
                     // Size badge
                     if (stream.formattedSize.isNotBlank()) {
                         Surface(
-                            shape = RoundedCornerShape(5.dp),
+                            shape = RoundedCornerShape(4.dp),
                             color = NuvioSurfaceVariant
                         ) {
                             Text(
                                 text = stream.formattedSize,
                                 color = NuvioTextSecondary,
-                                fontSize = 11.sp,
+                                fontSize = 9.sp,
                                 fontWeight = FontWeight.SemiBold,
                                 maxLines = 1,
                                 softWrap = false,
                                 overflow = TextOverflow.Ellipsis,
-                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                modifier = Modifier.padding(horizontal = 5.dp, vertical = 1.dp)
                             )
                         }
                     }
 
                     // Audio
                     Surface(
-                        shape = RoundedCornerShape(5.dp),
+                        shape = RoundedCornerShape(4.dp),
                         color = NuvioSurfaceVariant
                     ) {
                         Text(
                             text = stream.displayAudio,
                             color = NuvioSecondary,
-                            fontSize = 10.sp,
+                            fontSize = 8.sp,
                             fontWeight = FontWeight.Bold,
                             maxLines = 1,
                             softWrap = false,
                             overflow = TextOverflow.Ellipsis,
-                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                            modifier = Modifier.padding(horizontal = 5.dp, vertical = 1.dp)
                         )
                     }
                 }
@@ -949,8 +1154,8 @@ fun StreamOptionCard(
                         containerColor = NuvioPrimary,
                         contentColor = Color.Black
                     ),
-                    contentPadding = PaddingValues(horizontal = 14.dp, vertical = 6.dp),
-                    modifier = Modifier.height(36.dp)
+                    contentPadding = PaddingValues(horizontal = 16.dp, vertical = 6.dp),
+                    modifier = Modifier.height(36.dp).widthIn(min = 80.dp)
                 ) {
                     Icon(
                         imageVector = Icons.Default.PlayArrow,
@@ -960,10 +1165,11 @@ fun StreamOptionCard(
                     Spacer(modifier = Modifier.width(4.dp))
                     Text(
                         text = "Play",
-                        fontSize = 12.sp,
+                        fontSize = 13.sp,
                         fontWeight = FontWeight.Bold,
                         maxLines = 1,
-                        softWrap = false
+                        softWrap = false,
+                        overflow = TextOverflow.Visible
                     )
                 }
             }
